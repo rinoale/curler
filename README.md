@@ -174,6 +174,31 @@ https://google.com
 
 ## Development
 
+### Source Tree
+
+Curler keeps domain logic, app state, adapters, and TUI code in separate modules:
+
+```text
+src/
+  main.rs              Binary entrypoint, terminal setup, event loop
+  cli.rs               Curler-level CLI flags such as --help and --version
+  app/                 TUI application state machine and user actions
+  domain/              HTTP request/history/state models and pure logic
+  net/                 HTTP backend adapters
+  storage/             Project discovery and filesystem path ownership
+  ui/                  Ratatui rendering, layout hit-testing, and reusable widgets
+```
+
+Folder responsibilities:
+
+- `app/`: owns `App`, focus, overlays, request editing, history selection, run state, and dispatch behavior.
+- `domain/`: owns durable concepts: `RequestDraft`, body modes, headers/cookies, project history, shared state, variables, and response bindings.
+- `net/`: owns network execution details. The current backend is `ureq`; future `tokio`/`reqwest` work should stay behind this boundary.
+- `storage/`: owns filesystem/project discovery such as `~/.curler/projects/histories/`.
+- `ui/`: owns Ratatui drawing and mouse hit-testing. Shared UI controls should go into focused widget modules such as `ui/key_value.rs`.
+- `cli.rs`: owns flags that Curler handles before starting the TUI. Request/curl-compatible arguments should continue into `App::load`.
+- `main.rs`: wires CLI, terminal setup/cleanup, the event loop, and top-level mouse/keyboard dispatch.
+
 Run checks:
 
 ```sh

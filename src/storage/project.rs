@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::request::stable_hash;
+use crate::domain::request::stable_hash;
 
 #[derive(Debug, Clone)]
 pub struct ProjectContext {

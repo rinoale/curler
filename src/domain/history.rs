@@ -2,7 +2,7 @@ use std::{fs, io, path::Path, time::SystemTime};
 
 use serde::{Deserialize, Serialize};
 
-use crate::request::RequestDraft;
+use crate::domain::request::RequestDraft;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProjectHistory {

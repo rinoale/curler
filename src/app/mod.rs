@@ -3,11 +3,13 @@ use std::{collections::BTreeSet, io, sync::mpsc, thread};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::{
-    history::ProjectHistory,
-    http::HttpResponse,
-    project::ProjectContext,
-    request::{BodyMode, Header, RequestDraft},
-    state::ProjectState,
+    domain::{
+        history::ProjectHistory,
+        request::{BodyMode, Header, RequestDraft},
+        state::ProjectState,
+    },
+    net::http::HttpResponse,
+    storage::project::ProjectContext,
 };
 
 #[derive(Debug)]
@@ -1926,7 +1928,7 @@ fn global_action(key: KeyEvent) -> Option<Action> {
 
 #[cfg(not(test))]
 fn execute_request(request: &RequestDraft, state: &ProjectState) -> Result<HttpResponse, String> {
-    crate::http::send(request, state)
+    crate::net::http::send(request, state)
 }
 
 #[cfg(test)]

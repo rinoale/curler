@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, fs, io, path::Path};
 
 use serde::{Deserialize, Serialize};
 
-use crate::request::{Cookie, Header, RequestDraft};
+use crate::domain::request::{Cookie, Header, RequestDraft};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProjectState {

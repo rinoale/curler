@@ -1,6 +1,6 @@
 use std::{io::Read, time::Duration};
 
-use crate::{
+use crate::domain::{
     request::{BodyMode, Header, RequestDraft},
     state::ProjectState,
 };
@@ -176,7 +176,7 @@ fn has_header(headers: &[Header], name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::request::Cookie;
+    use crate::domain::request::Cookie;
 
     #[test]
     fn local_headers_override_shared_headers_and_values_are_resolved() {
