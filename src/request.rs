@@ -238,6 +238,10 @@ impl BodyMode {
             Self::Binary => "binary",
         }
     }
+
+    pub fn is_key_value_body(self) -> bool {
+        matches!(self, Self::FormData | Self::UrlEncoded)
+    }
 }
 
 fn parse_curl_args(args: &[String]) -> Result<RequestDraft, String> {

@@ -7,11 +7,32 @@ use ratatui::{
 };
 
 use crate::{
-    app::{App, FocusPane, HeaderAction, HistoryRow, Overlay},
+    app::{App, FocusPane, HeaderAction, HistoryRow, KeyValueColumn, Overlay},
     request::BodyMode,
 };
 
 const HISTORY_WIDTH: u16 = 36;
+const CELL_GAP: u16 = 1;
+const MIN_KEY_CELL_WIDTH: u16 = 12;
+const MAX_KEY_CELL_WIDTH: u16 = 24;
+const MIN_VALUE_CELL_WIDTH: u16 = 6;
+const RESPONSE_HEADER_PREVIEW_LIMIT: usize = 8;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct KeyValueLayout {
+    key_width: u16,
+    value_width: u16,
+}
+
+impl KeyValueLayout {
+    fn key_inner_width(self) -> u16 {
+        self.key_width.saturating_sub(2).max(1)
+    }
+
+    fn value_inner_width(self) -> u16 {
+        self.value_width.saturating_sub(2).max(1)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MethodOption {
@@ -229,23 +250,13 @@ fn draw_request_editor(frame: &mut Frame<'_>, layout: AppLayout, app: &App) {
         layout.query,
     );
 
-    frame.render_widget(
-        Paragraph::new(app.headers_input())
-            .block(focused_block("Headers", FocusPane::Headers, app))
-            .wrap(Wrap { trim: false }),
-        layout.headers,
-    );
+    draw_headers(frame, layout.headers, app);
 
     draw_state(frame, layout.state, app);
 
     draw_body(frame, layout.body, app);
 
-    frame.render_widget(
-        Paragraph::new("No response yet")
-            .block(focused_block("Response", FocusPane::Response, app))
-            .style(Style::default().fg(Color::DarkGray)),
-        layout.response,
-    );
+    draw_response(frame, layout.response, app);
 }
 
 fn method_dropdown_label(method: &str) -> Line<'static> {
@@ -260,18 +271,54 @@ fn method_dropdown_label(method: &str) -> Line<'static> {
     ])
 }
 
+fn draw_headers(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let rows = app
+        .request()
+        .headers
+        .iter()
+        .map(|header| (header.name.as_str(), header.value.to_string()))
+        .collect::<Vec<_>>();
+    let content_width = block_inner(area).width;
+
+    frame.render_widget(
+        Paragraph::new(key_value_lines_from_owned_value(
+            "Name",
+            "Value",
+            rows,
+            app.active_local_header_cell(),
+            content_width,
+            "+ Add Header",
+        ))
+        .block(focused_block("Local Headers", FocusPane::Headers, app))
+        .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
 fn draw_state(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let state = app.state();
-    let mut lines = Vec::new();
+    let mut lines = vec![Line::from(Span::styled(
+        "Shared Headers",
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD),
+    ))];
 
-    for header in &state.shared_headers {
-        lines.push(Line::from(vec![
-            Span::styled("Header ", Style::default().fg(Color::DarkGray)),
-            Span::raw(header.name.clone()),
-            Span::raw(": "),
-            Span::raw(state.resolve_value(&header.value)),
-        ]));
-    }
+    let shared_header_rows = state
+        .shared_headers
+        .iter()
+        .map(|header| (header.name.as_str(), state.resolve_value(&header.value)))
+        .collect::<Vec<_>>();
+    lines.extend(key_value_lines_from_owned_value(
+        "Name",
+        "Value",
+        shared_header_rows,
+        app.active_shared_header_cell(),
+        block_inner(area).width,
+        "+ Add Shared Header",
+    ));
+
+    lines.push(Line::from(""));
 
     for cookie in &state.cookies {
         lines.push(Line::from(vec![
@@ -305,19 +352,257 @@ fn draw_state(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ]));
     }
 
-    if lines.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "<empty>",
-            Style::default().fg(Color::DarkGray),
-        )));
-    }
-
     frame.render_widget(
         Paragraph::new(lines)
-            .block(focused_block("Project State", FocusPane::State, app))
+            .block(focused_block(
+                "Project State / Shared Config",
+                FocusPane::State,
+                app,
+            ))
             .wrap(Wrap { trim: false }),
         area,
     );
+}
+
+fn key_value_lines_from_owned_value(
+    key_title: &'static str,
+    value_title: &'static str,
+    rows: Vec<(&str, String)>,
+    active: Option<(usize, KeyValueColumn)>,
+    content_width: u16,
+    add_label: &'static str,
+) -> Vec<Line<'static>> {
+    let layout = key_value_layout(content_width);
+    let mut lines = Vec::new();
+    let row_count = rows.len().max(1);
+
+    for index in 0..row_count {
+        let key = rows.get(index).map_or("", |(key, _)| *key);
+        let value = rows.get(index).map_or("", |(_, value)| value.as_str());
+        lines.extend(key_value_row_lines(
+            key_title,
+            value_title,
+            key,
+            value,
+            layout,
+            active.map(|(active_index, column)| (active_index == index, column)),
+        ));
+    }
+
+    lines.push(Line::from(Span::styled(
+        add_label,
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD),
+    )));
+
+    lines
+}
+
+fn key_value_row_lines(
+    key_title: &str,
+    value_title: &str,
+    key: &str,
+    value: &str,
+    layout: KeyValueLayout,
+    active: Option<(bool, KeyValueColumn)>,
+) -> Vec<Line<'static>> {
+    let key_active = active == Some((true, KeyValueColumn::Key));
+    let value_active = active == Some((true, KeyValueColumn::Value));
+    let key_style = if key_active {
+        active_cell_style()
+    } else {
+        Style::default()
+    };
+    let value_style = if value_active {
+        active_cell_style()
+    } else {
+        Style::default()
+    };
+    let key_border_style = cell_border_style(key_active);
+    let value_border_style = cell_border_style(value_active);
+    let key_lines = wrap_cell_text(key, layout.key_inner_width());
+    let value_lines = wrap_cell_text(value, layout.value_inner_width());
+    let body_height = key_lines.len().max(value_lines.len()).max(1);
+    let mut lines = Vec::with_capacity(body_height + 2);
+
+    lines.push(cell_border_line(
+        layout,
+        key_title,
+        value_title,
+        key_border_style,
+        value_border_style,
+    ));
+
+    for index in 0..body_height {
+        lines.push(cell_content_line(
+            layout,
+            key_lines.get(index).map_or("", String::as_str),
+            value_lines.get(index).map_or("", String::as_str),
+            key_style,
+            value_style,
+            key_border_style,
+            value_border_style,
+        ));
+    }
+
+    lines.push(cell_border_line(
+        layout,
+        "",
+        "",
+        key_border_style,
+        value_border_style,
+    ));
+    lines
+}
+
+fn active_cell_style() -> Style {
+    Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD)
+}
+
+fn cell_border_style(active: bool) -> Style {
+    if active {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    }
+}
+
+fn cell_border_line(
+    layout: KeyValueLayout,
+    key_title: &str,
+    value_title: &str,
+    key_style: Style,
+    value_style: Style,
+) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(labeled_cell_border(layout.key_width, key_title), key_style),
+        Span::raw(" ".repeat(usize::from(CELL_GAP))),
+        Span::styled(
+            labeled_cell_border(layout.value_width, value_title),
+            value_style,
+        ),
+    ])
+}
+
+fn cell_content_line(
+    layout: KeyValueLayout,
+    key: &str,
+    value: &str,
+    key_style: Style,
+    value_style: Style,
+    key_border_style: Style,
+    value_border_style: Style,
+) -> Line<'static> {
+    Line::from(vec![
+        Span::styled("|", key_border_style),
+        Span::styled(pad_cell_text(key, layout.key_inner_width()), key_style),
+        Span::styled("|", key_border_style),
+        Span::raw(" ".repeat(usize::from(CELL_GAP))),
+        Span::styled("|", value_border_style),
+        Span::styled(
+            pad_cell_text(value, layout.value_inner_width()),
+            value_style,
+        ),
+        Span::styled("|", value_border_style),
+    ])
+}
+
+fn cell_border(width: u16) -> String {
+    if width < 2 {
+        return "+".repeat(usize::from(width));
+    }
+
+    format!("+{}+", "-".repeat(usize::from(width.saturating_sub(2))))
+}
+
+fn labeled_cell_border(width: u16, label: &str) -> String {
+    if width < 4 || label.is_empty() {
+        return cell_border(width);
+    }
+
+    let inner_width = usize::from(width.saturating_sub(2));
+    let label = label.chars().take(inner_width).collect::<String>();
+    let padding = inner_width.saturating_sub(label.chars().count());
+
+    format!("+{}{}+", label, "-".repeat(padding))
+}
+
+fn key_value_layout(content_width: u16) -> KeyValueLayout {
+    let available = content_width.saturating_sub(CELL_GAP);
+
+    if available < 4 {
+        return KeyValueLayout {
+            key_width: content_width.max(2),
+            value_width: 0,
+        };
+    }
+
+    if available < MIN_KEY_CELL_WIDTH.saturating_add(MIN_VALUE_CELL_WIDTH) {
+        let key_width = available / 2;
+        let value_width = available.saturating_sub(key_width);
+
+        return KeyValueLayout {
+            key_width,
+            value_width,
+        };
+    }
+
+    let key_width = (available.saturating_mul(2) / 3)
+        .clamp(MIN_KEY_CELL_WIDTH, MAX_KEY_CELL_WIDTH)
+        .min(available.saturating_sub(MIN_VALUE_CELL_WIDTH));
+    let value_width = available.saturating_sub(key_width);
+
+    KeyValueLayout {
+        key_width,
+        value_width,
+    }
+}
+
+fn wrap_cell_text(value: &str, width: u16) -> Vec<String> {
+    let width = usize::from(width.max(1));
+    let mut lines = Vec::new();
+    let mut current = String::new();
+
+    for character in value.chars() {
+        if character == '\n' {
+            lines.push(current);
+            current = String::new();
+            continue;
+        }
+
+        current.push(character);
+
+        if current.chars().count() == width {
+            lines.push(current);
+            current = String::new();
+        }
+    }
+
+    if !current.is_empty() || lines.is_empty() {
+        lines.push(current);
+    }
+
+    lines
+}
+
+fn pad_cell_text(value: &str, width: u16) -> String {
+    let width = usize::from(width.max(1));
+    let mut text = value.chars().take(width).collect::<String>();
+    let padding = width.saturating_sub(text.chars().count());
+    text.extend(std::iter::repeat_n(' ', padding));
+    text
+}
+
+fn key_value_row_height(key: &str, value: &str, layout: KeyValueLayout) -> u16 {
+    let content_height = wrap_cell_text(key, layout.key_inner_width())
+        .len()
+        .max(wrap_cell_text(value, layout.value_inner_width()).len())
+        .max(1);
+
+    (content_height as u16).saturating_add(2)
 }
 
 fn draw_logs(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -350,6 +635,113 @@ fn draw_logs(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
 }
 
+fn draw_response(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let lines = response_lines(app);
+    let style = if app.response().is_some() {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(focused_block("Response", FocusPane::Response, app))
+            .style(style)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn response_lines(app: &App) -> Vec<Line<'static>> {
+    let Some(response) = app.response() else {
+        return vec![Line::from("No response yet")];
+    };
+
+    let status_style = if (200..300).contains(&response.status) {
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD)
+    } else if response.status >= 400 {
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    };
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("HTTP ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{} {}", response.status, response.status_text),
+                status_style,
+            ),
+        ]),
+        Line::from(""),
+    ];
+
+    let shown_headers = if app.response_headers_expanded() {
+        response.headers.len()
+    } else {
+        response.headers.len().min(RESPONSE_HEADER_PREVIEW_LIMIT)
+    };
+
+    for header in response.headers.iter().take(shown_headers) {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{}: ", header.name),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::raw(header.value.clone()),
+        ]));
+    }
+
+    if response.headers.len() > RESPONSE_HEADER_PREVIEW_LIMIT {
+        let label = if app.response_headers_expanded() {
+            "[-] Hide headers".to_string()
+        } else {
+            format!(
+                "[+] {} more headers",
+                response.headers.len() - RESPONSE_HEADER_PREVIEW_LIMIT
+            )
+        };
+        lines.push(Line::from(Span::styled(
+            label,
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::UNDERLINED),
+        )));
+    }
+
+    if !response.headers.is_empty() {
+        lines.push(Line::from(""));
+    }
+
+    let body_lines = if response.body.is_empty() {
+        vec![Line::from(Span::styled(
+            "<empty body>",
+            Style::default().fg(Color::DarkGray),
+        ))]
+    } else {
+        response
+            .body
+            .lines()
+            .take(120)
+            .map(|line| Line::from(line.to_string()))
+            .collect::<Vec<_>>()
+    };
+
+    lines.extend(body_lines);
+
+    if response.truncated {
+        lines.push(Line::from(Span::styled(
+            "... response body truncated",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    lines
+}
+
 fn draw_overlay(frame: &mut Frame<'_>, area: Rect, app: &App) {
     match app.overlay() {
         Some(Overlay::About) => draw_about(frame, area),
@@ -358,20 +750,15 @@ fn draw_overlay(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Some(Overlay::BodyModeMenu) => draw_body_mode_menu(frame, area, app.body_mode()),
         Some(Overlay::RenameHistory) => draw_rename_history(frame, area, app),
         Some(Overlay::Help) => draw_help(frame, area),
+        Some(Overlay::ContextMenu) => draw_context_menu(frame, area, app),
         None => {}
     }
 }
 
 fn draw_body(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let mut lines = vec![
-        body_mode_label(app.body_mode()),
-        Line::from(Span::styled(
-            "----------------",
-            Style::default().fg(Color::DarkGray),
-        )),
-    ];
+    let mut lines = vec![body_mode_label(app.body_mode())];
 
-    lines.extend(body_editor_lines(app.body_mode(), app.body_input()));
+    lines.extend(body_editor_lines(app, block_inner(area).width));
 
     frame.render_widget(
         Paragraph::new(lines)
@@ -394,9 +781,10 @@ fn body_mode_label(mode: BodyMode) -> Line<'static> {
     ])
 }
 
-fn body_editor_lines(mode: BodyMode, input: &str) -> Vec<Line<'static>> {
-    match mode {
+fn body_editor_lines(app: &App, content_width: u16) -> Vec<Line<'static>> {
+    match app.body_mode() {
         BodyMode::Raw | BodyMode::Binary => {
+            let input = app.body_input();
             if input.is_empty() {
                 Vec::new()
             } else {
@@ -406,29 +794,22 @@ fn body_editor_lines(mode: BodyMode, input: &str) -> Vec<Line<'static>> {
                     .collect()
             }
         }
-        BodyMode::FormData | BodyMode::UrlEncoded => key_value_body_lines(input),
+        BodyMode::FormData | BodyMode::UrlEncoded => key_value_body_lines(app, content_width),
     }
 }
 
-fn key_value_body_lines(input: &str) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::from(vec![
-        Span::styled("Key", Style::default().fg(Color::Cyan)),
-        Span::raw("                  "),
-        Span::styled("Value", Style::default().fg(Color::Cyan)),
-    ])];
-
-    lines.extend(input.lines().map(|line| {
-        if let Some((key, value)) = line.split_once('=') {
-            Line::from(vec![
-                Span::raw(pad_field(key.trim(), 20)),
-                Span::raw(value.trim().to_string()),
-            ])
-        } else {
-            Line::from(line.to_string())
-        }
-    }));
-
-    lines
+fn key_value_body_lines(app: &App, content_width: u16) -> Vec<Line<'static>> {
+    key_value_lines_from_owned_value(
+        "Key",
+        "Value",
+        app.body_fields()
+            .iter()
+            .map(|field| (field.key.as_str(), field.value.clone()))
+            .collect(),
+        app.active_body_field_cell(),
+        content_width,
+        "+ Add Field",
+    )
 }
 
 fn draw_about(frame: &mut Frame<'_>, area: Rect) {
@@ -557,7 +938,7 @@ fn draw_rename_history(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn draw_help(frame: &mut Frame<'_>, area: Rect) {
-    let rect = centered_rect(area, 68, 17);
+    let rect = centered_rect(area, 74, 18);
     let lines = vec![
         Line::from(Span::styled(
             "Global",
@@ -576,10 +957,12 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
         )),
         Line::from("History: j/k move, Enter or Space expand/select, a add, d delete, r rename"),
         Line::from("Method: Enter/Space opens dropdown, click option; 1-5 selects"),
-        Line::from("Host/Path and Query: type text, Backspace deletes text"),
-        Line::from("Headers and Body: type text, Enter newline, Backspace deletes text"),
+        Line::from("Host/Path and Query: plain text input"),
+        Line::from("Headers: key/value rows; raw Name: value paste is accepted"),
+        Line::from("Body: Raw is text; Form/URL Encoded are key/value rows"),
+        Line::from("Shared headers: edit rows in Project State / Shared Config"),
         Line::from("Body mode: click Mode dropdown inside Body"),
-        Line::from("Response: v bind variable, y copy"),
+        Line::from("Response: click header toggle; h/Enter toggles headers; v bind, y copy"),
         Line::from("Logs: c clear"),
         Line::from(""),
         Line::from("Esc closes this help pane."),
@@ -590,6 +973,24 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
         Paragraph::new(lines)
             .block(Block::default().title("Help").borders(Borders::ALL))
             .wrap(Wrap { trim: false }),
+        rect,
+    );
+}
+
+fn draw_context_menu(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let Some(rect) = context_menu_rect(area, app) else {
+        return;
+    };
+
+    let lines = app
+        .context_menu_items()
+        .into_iter()
+        .map(|item| Line::from(Span::raw(item)))
+        .collect::<Vec<_>>();
+
+    frame.render_widget(Clear, rect);
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::default().title("Menu").borders(Borders::ALL)),
         rect,
     );
 }
@@ -704,6 +1105,145 @@ pub fn body_mode_for_menu_row(row_index: usize) -> Option<BodyMode> {
     BODY_MODE_OPTIONS.get(row_index).map(|option| option.mode)
 }
 
+pub fn response_header_toggle_at(area: Rect, app: &App, column: u16, row: u16) -> bool {
+    let Some(line_index) = response_header_toggle_line_index(app) else {
+        return false;
+    };
+    let content = block_inner(app_layout(area).response);
+    if line_index >= content.height {
+        return false;
+    }
+
+    let toggle = Rect {
+        x: content.x,
+        y: content.y.saturating_add(line_index),
+        width: content.width,
+        height: 1,
+    };
+
+    contains(toggle, column, row)
+}
+
+pub fn context_menu_row_at(area: Rect, app: &App, column: u16, row: u16) -> Option<usize> {
+    let item_count = app.context_menu_items().len();
+    let content = block_inner(context_menu_rect(area, app)?);
+
+    if !contains(content, column, row) {
+        return None;
+    }
+
+    let row_index = usize::from(row - content.y);
+
+    if row_index < item_count {
+        Some(row_index)
+    } else {
+        None
+    }
+}
+
+fn response_header_toggle_line_index(app: &App) -> Option<u16> {
+    let response = app.response()?;
+
+    if response.headers.len() <= RESPONSE_HEADER_PREVIEW_LIMIT {
+        return None;
+    }
+
+    let shown_headers = if app.response_headers_expanded() {
+        response.headers.len()
+    } else {
+        RESPONSE_HEADER_PREVIEW_LIMIT
+    };
+
+    Some(2_u16.saturating_add(shown_headers as u16))
+}
+
+pub fn local_header_cell_at(
+    area: Rect,
+    app: &App,
+    column: u16,
+    row: u16,
+) -> Option<(usize, KeyValueColumn)> {
+    let rows = app
+        .request()
+        .headers
+        .iter()
+        .map(|header| (header.name.as_str(), header.value.as_str()))
+        .collect::<Vec<_>>();
+
+    key_value_cell_at(app_layout(area).headers, 0, rows, column, row)
+}
+
+pub fn local_header_add_row_at(area: Rect, app: &App, column: u16, row: u16) -> bool {
+    let rows = app
+        .request()
+        .headers
+        .iter()
+        .map(|header| (header.name.as_str(), header.value.as_str()))
+        .collect::<Vec<_>>();
+
+    key_value_add_row_at(app_layout(area).headers, 0, rows, column, row)
+}
+
+pub fn shared_header_cell_at(
+    area: Rect,
+    app: &App,
+    column: u16,
+    row: u16,
+) -> Option<(usize, KeyValueColumn)> {
+    let rows = app
+        .state()
+        .shared_headers
+        .iter()
+        .map(|header| (header.name.as_str(), header.value.as_str()))
+        .collect::<Vec<_>>();
+
+    key_value_cell_at(app_layout(area).state, 1, rows, column, row)
+}
+
+pub fn shared_header_add_row_at(area: Rect, app: &App, column: u16, row: u16) -> bool {
+    let rows = app
+        .state()
+        .shared_headers
+        .iter()
+        .map(|header| (header.name.as_str(), header.value.as_str()))
+        .collect::<Vec<_>>();
+
+    key_value_add_row_at(app_layout(area).state, 1, rows, column, row)
+}
+
+pub fn body_field_cell_at(
+    area: Rect,
+    app: &App,
+    column: u16,
+    row: u16,
+) -> Option<(usize, KeyValueColumn)> {
+    if !app.body_mode().is_key_value_body() {
+        return None;
+    }
+
+    let rows = app
+        .body_fields()
+        .iter()
+        .map(|field| (field.key.as_str(), field.value.as_str()))
+        .collect::<Vec<_>>();
+
+    key_value_cell_at(app_layout(area).body, 1, rows, column, row)
+}
+
+pub fn body_field_add_row_at(area: Rect, app: &App, column: u16, row: u16) -> bool {
+    if !app.body_mode().is_key_value_body() {
+        return false;
+    }
+
+    let rows = app
+        .body_fields()
+        .iter()
+        .map(|field| (field.key.as_str(), field.value.as_str()))
+        .collect::<Vec<_>>();
+
+    key_value_add_row_at(app_layout(area).body, 1, rows, column, row)
+}
+
 pub fn history_row_at(area: Rect, column: u16, row: u16) -> Option<usize> {
     let content = block_inner(app_layout(area).history);
 
@@ -712,6 +1252,94 @@ pub fn history_row_at(area: Rect, column: u16, row: u16) -> Option<usize> {
     }
 
     Some(usize::from(row - content.y))
+}
+
+fn key_value_cell_at(
+    pane: Rect,
+    row_offset: u16,
+    rows: Vec<(&str, &str)>,
+    column: u16,
+    row: u16,
+) -> Option<(usize, KeyValueColumn)> {
+    let content = block_inner(pane);
+    let layout = key_value_layout(content.width);
+    let key = Rect {
+        x: content.x,
+        y: content.y,
+        width: layout.key_width,
+        height: content.height,
+    };
+    let value_x = content
+        .x
+        .saturating_add(layout.key_width)
+        .saturating_add(CELL_GAP);
+    let value = Rect {
+        x: value_x,
+        y: content.y,
+        width: layout.value_width,
+        height: content.height,
+    };
+
+    if !contains(key, column, row) && !contains(value, column, row) {
+        return None;
+    }
+
+    let row_count = rows.len().max(1);
+    let mut row_start = content.y.saturating_add(row_offset);
+
+    for index in 0..row_count {
+        let key_text = rows.get(index).map_or("", |(key, _)| *key);
+        let value_text = rows.get(index).map_or("", |(_, value)| *value);
+        let row_height = key_value_row_height(key_text, value_text, layout);
+        let row_end = row_start.saturating_add(row_height);
+
+        if row >= row_start && row < row_end {
+            return if contains(key, column, row) {
+                Some((index, KeyValueColumn::Key))
+            } else {
+                Some((index, KeyValueColumn::Value))
+            };
+        }
+
+        row_start = row_end;
+    }
+
+    None
+}
+
+fn key_value_add_row_at(
+    pane: Rect,
+    row_offset: u16,
+    rows: Vec<(&str, &str)>,
+    column: u16,
+    row: u16,
+) -> bool {
+    let content = block_inner(pane);
+    let layout = key_value_layout(content.width);
+
+    if !contains(content, column, row) {
+        return false;
+    }
+
+    let row_count = rows.len().max(1);
+    let mut row_start = content.y.saturating_add(row_offset);
+
+    for index in 0..row_count {
+        let key_text = rows.get(index).map_or("", |(key, _)| *key);
+        let value_text = rows.get(index).map_or("", |(_, value)| *value);
+        row_start = row_start.saturating_add(key_value_row_height(key_text, value_text, layout));
+    }
+
+    contains(
+        Rect {
+            x: content.x,
+            y: row_start,
+            width: content.width,
+            height: 1,
+        },
+        column,
+        row,
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -781,16 +1409,15 @@ fn app_layout(area: Rect) -> AppLayout {
     let sections = Layout::vertical([
         Constraint::Length(6),
         Constraint::Min(10),
-        Constraint::Length(5),
+        Constraint::Length(4),
     ])
     .split(area);
     let columns = Layout::horizontal([Constraint::Length(HISTORY_WIDTH), Constraint::Min(40)])
         .split(sections[1]);
     let rows = Layout::vertical([
         Constraint::Length(3),
-        Constraint::Percentage(28),
-        Constraint::Percentage(22),
-        Constraint::Percentage(50),
+        Constraint::Length(7),
+        Constraint::Min(4),
     ])
     .split(columns[1]);
     let request_panes = Layout::horizontal([
@@ -799,8 +1426,10 @@ fn app_layout(area: Rect) -> AppLayout {
         Constraint::Percentage(52),
     ])
     .split(rows[0]);
+    let header_state =
+        Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)]).split(rows[1]);
     let lower =
-        Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).split(rows[3]);
+        Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).split(rows[2]);
 
     AppLayout {
         header: sections[0],
@@ -808,8 +1437,8 @@ fn app_layout(area: Rect) -> AppLayout {
         method: request_panes[0],
         url: request_panes[1],
         query: request_panes[2],
-        headers: rows[1],
-        state: rows[2],
+        headers: header_state[0],
+        state: header_state[1],
         body: lower[0],
         response: lower[1],
         logs: sections[2],
@@ -869,6 +1498,33 @@ fn body_mode_menu_rect(area: Rect) -> Rect {
     )
 }
 
+fn context_menu_rect(area: Rect, app: &App) -> Option<Rect> {
+    let menu = app.context_menu()?;
+    let items = app.context_menu_items();
+
+    if items.is_empty() {
+        return None;
+    }
+
+    let item_width = items
+        .iter()
+        .map(|item| item.chars().count())
+        .max()
+        .unwrap_or(0);
+    let width = (item_width as u16).saturating_add(4).max(16);
+    let height = (items.len() as u16).saturating_add(2);
+
+    Some(bounded_rect(
+        area,
+        Rect {
+            x: menu.column,
+            y: menu.row,
+            width,
+            height,
+        },
+    ))
+}
+
 fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
     let width = width.min(area.width.saturating_sub(4));
     let height = height.min(area.height.saturating_sub(2));
@@ -909,16 +1565,6 @@ fn block_inner(area: Rect) -> Rect {
         width: area.width.saturating_sub(2),
         height: area.height.saturating_sub(2),
     }
-}
-
-fn pad_field(value: &str, width: usize) -> String {
-    let mut field = value
-        .chars()
-        .take(width.saturating_sub(1))
-        .collect::<String>();
-    let padding = width.saturating_sub(field.chars().count());
-    field.extend(std::iter::repeat_n(' ', padding));
-    field
 }
 
 #[cfg(test)]
@@ -985,5 +1631,99 @@ mod tests {
         assert_eq!(body_mode_for_menu_row(0), Some(BodyMode::Raw));
         assert_eq!(body_mode_for_menu_row(3), Some(BodyMode::Binary));
         assert_eq!(body_mode_for_menu_row(4), None);
+    }
+
+    #[test]
+    fn maps_key_value_cells() {
+        let area = Rect::new(0, 0, 80, 24);
+        let mut app = App::new();
+        app.select_body_mode_option(BodyMode::UrlEncoded);
+        let layout = app_layout(area);
+        let header = block_inner(layout.headers);
+        let state = block_inner(layout.state);
+        let body = block_inner(layout.body);
+        let header_layout = key_value_layout(header.width);
+        let value_offset = header_layout.key_width + CELL_GAP;
+
+        assert_eq!(
+            local_header_cell_at(area, &app, header.x, header.y),
+            Some((0, KeyValueColumn::Key))
+        );
+        assert_eq!(
+            local_header_cell_at(area, &app, header.x + value_offset, header.y),
+            Some((0, KeyValueColumn::Value))
+        );
+        assert_eq!(
+            shared_header_cell_at(area, &app, state.x, state.y + 1),
+            Some((0, KeyValueColumn::Key))
+        );
+        assert_eq!(
+            body_field_cell_at(area, &app, body.x, body.y + 1),
+            Some((0, KeyValueColumn::Key))
+        );
+    }
+
+    #[test]
+    fn maps_key_value_add_rows() {
+        let area = Rect::new(0, 0, 120, 36);
+        let mut app = App::new();
+        app.open_context_menu(crate::app::ContextTarget::LocalHeader(0), 0, 0);
+        app.activate_context_menu_row(1);
+        app.select_body_mode_option(BodyMode::UrlEncoded);
+
+        let layout = app_layout(area);
+        let header = block_inner(layout.headers);
+        let state = block_inner(layout.state);
+        let body = block_inner(layout.body);
+
+        assert!(local_header_add_row_at(area, &app, header.x, header.y + 3));
+        assert!(shared_header_add_row_at(area, &app, state.x, state.y + 4));
+        assert!(body_field_add_row_at(area, &app, body.x, body.y + 4));
+    }
+
+    #[test]
+    fn maps_context_menu_rows() {
+        let area = Rect::new(0, 0, 80, 24);
+        let mut app = App::new();
+
+        app.open_context_menu(crate::app::ContextTarget::LocalHeader(0), 20, 10);
+
+        assert_eq!(context_menu_row_at(area, &app, 21, 11), Some(0));
+        assert_eq!(context_menu_row_at(area, &app, 21, 12), Some(1));
+        assert_eq!(context_menu_row_at(area, &app, 21, 13), Some(2));
+        assert_eq!(context_menu_row_at(area, &app, 21, 14), None);
+    }
+
+    #[test]
+    fn maps_response_header_toggle_line() {
+        let area = Rect::new(0, 0, 120, 40);
+        let mut app = App::new();
+        app.set_response_for_test(crate::http::HttpResponse {
+            status: 200,
+            status_text: "OK".to_string(),
+            headers: (0..10)
+                .map(|index| crate::request::Header::new(format!("X-Test-{index}"), "yes"))
+                .collect(),
+            body: String::new(),
+            truncated: false,
+        });
+
+        let response = block_inner(app_layout(area).response);
+
+        assert!(response_header_toggle_at(
+            area,
+            &app,
+            response.x,
+            response.y + 10
+        ));
+
+        app.toggle_response_headers();
+
+        assert!(response_header_toggle_at(
+            area,
+            &app,
+            response.x,
+            response.y + 12
+        ));
     }
 }

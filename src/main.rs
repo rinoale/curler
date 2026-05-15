@@ -15,12 +15,13 @@ use ratatui::{Terminal, backend::CrosstermBackend, layout::Rect};
 
 mod app;
 mod history;
+mod http;
 mod project;
 mod request;
 mod state;
 mod ui;
 
-use app::App;
+use app::{App, ContextTarget};
 
 type Tui = Terminal<CrosstermBackend<Stdout>>;
 
@@ -73,6 +74,16 @@ fn run_app(terminal: &mut Tui, mut app: App) -> io::Result<()> {
                     let size = terminal.size()?;
                     let area = Rect::new(0, 0, size.width, size.height);
 
+                    if app.overlay() == Some(app::Overlay::ContextMenu) {
+                        if let Some(row_index) =
+                            ui::context_menu_row_at(area, &app, mouse.column, mouse.row)
+                        {
+                            app.activate_context_menu_row(row_index);
+                            continue;
+                        }
+                        app.close_overlay();
+                    }
+
                     if app.overlay() == Some(app::Overlay::Help) {
                         if let Some(action) = ui::header_action_at(area, mouse.column, mouse.row) {
                             app.activate_header_action(action);
@@ -124,6 +135,47 @@ fn run_app(terminal: &mut Tui, mut app: App) -> io::Result<()> {
                         continue;
                     }
 
+                    if ui::response_header_toggle_at(area, &app, mouse.column, mouse.row) {
+                        app.toggle_response_headers();
+                        continue;
+                    }
+
+                    if ui::local_header_add_row_at(area, &app, mouse.column, mouse.row) {
+                        app.add_local_header_row();
+                        continue;
+                    }
+
+                    if let Some((row_index, column)) =
+                        ui::local_header_cell_at(area, &app, mouse.column, mouse.row)
+                    {
+                        app.select_local_header_cell(row_index, column);
+                        continue;
+                    }
+
+                    if ui::shared_header_add_row_at(area, &app, mouse.column, mouse.row) {
+                        app.add_shared_header_row();
+                        continue;
+                    }
+
+                    if let Some((row_index, column)) =
+                        ui::shared_header_cell_at(area, &app, mouse.column, mouse.row)
+                    {
+                        app.select_shared_header_cell(row_index, column);
+                        continue;
+                    }
+
+                    if ui::body_field_add_row_at(area, &app, mouse.column, mouse.row) {
+                        app.add_body_field_row();
+                        continue;
+                    }
+
+                    if let Some((row_index, column)) =
+                        ui::body_field_cell_at(area, &app, mouse.column, mouse.row)
+                    {
+                        app.select_body_field_cell(row_index, column);
+                        continue;
+                    }
+
                     if let Some(pane) = ui::pane_at(area, mouse.column, mouse.row) {
                         app.set_focus(pane);
                     }
@@ -136,8 +188,8 @@ fn run_app(terminal: &mut Tui, mut app: App) -> io::Result<()> {
                     let size = terminal.size()?;
                     let area = Rect::new(0, 0, size.width, size.height);
 
-                    if let Some(pane) = ui::pane_at(area, mouse.column, mouse.row) {
-                        app.open_context_menu(pane);
+                    if let Some(target) = context_target_at(area, &app, mouse.column, mouse.row) {
+                        app.open_context_menu(target, mouse.column, mouse.row);
                     }
                 }
                 _ => {}
@@ -146,4 +198,49 @@ fn run_app(terminal: &mut Tui, mut app: App) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+fn context_target_at(area: Rect, app: &App, column: u16, row: u16) -> Option<ContextTarget> {
+    if let Some(row_index) = ui::history_row_at(area, column, row) {
+        return Some(ContextTarget::History(row_index));
+    }
+
+    if ui::pane_at(area, column, row) == Some(app::FocusPane::Method) {
+        return Some(ContextTarget::Method);
+    }
+
+    if let Some((row_index, _)) = ui::local_header_cell_at(area, app, column, row) {
+        return Some(ContextTarget::LocalHeader(row_index));
+    }
+
+    if ui::local_header_add_row_at(area, app, column, row) {
+        return Some(ContextTarget::LocalHeaders);
+    }
+
+    if let Some((row_index, _)) = ui::shared_header_cell_at(area, app, column, row) {
+        return Some(ContextTarget::SharedHeader(row_index));
+    }
+
+    if ui::shared_header_add_row_at(area, app, column, row) {
+        return Some(ContextTarget::SharedHeaders);
+    }
+
+    if let Some((row_index, _)) = ui::body_field_cell_at(area, app, column, row) {
+        return Some(ContextTarget::BodyField(row_index));
+    }
+
+    if ui::body_field_add_row_at(area, app, column, row) {
+        return Some(ContextTarget::BodyFields);
+    }
+
+    match ui::pane_at(area, column, row) {
+        Some(app::FocusPane::Headers) => Some(ContextTarget::LocalHeaders),
+        Some(app::FocusPane::State) => Some(ContextTarget::SharedHeaders),
+        Some(app::FocusPane::Body) if app.body_mode().is_key_value_body() => {
+            Some(ContextTarget::BodyFields)
+        }
+        Some(app::FocusPane::Body) => Some(ContextTarget::BodyRaw),
+        Some(app::FocusPane::Logs) => Some(ContextTarget::Logs),
+        _ => None,
+    }
 }

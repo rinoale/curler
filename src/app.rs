@@ -4,6 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::{
     history::ProjectHistory,
+    http::HttpResponse,
     project::ProjectContext,
     request::{BodyMode, Header, RequestDraft},
     state::ProjectState,
@@ -26,6 +27,11 @@ pub struct App {
     selected_history_id: Option<String>,
     history_cursor: usize,
     overlay: Option<Overlay>,
+    context_menu: Option<ContextMenuState>,
+    active_editor: Option<EditorTarget>,
+    body_fields: Vec<BodyField>,
+    response: Option<HttpResponse>,
+    response_headers_expanded: bool,
     rename_target_id: Option<String>,
     rename_input: String,
     logs: Vec<String>,
@@ -53,6 +59,7 @@ pub enum Overlay {
     BodyModeMenu,
     RenameHistory,
     Help,
+    ContextMenu,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +68,39 @@ pub enum HeaderAction {
     Run,
     File,
     Help,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyValueColumn {
+    Key,
+    Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BodyField {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextTarget {
+    History(usize),
+    Method,
+    LocalHeader(usize),
+    LocalHeaders,
+    SharedHeader(usize),
+    SharedHeaders,
+    BodyField(usize),
+    BodyFields,
+    BodyRaw,
+    Logs,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextMenuState {
+    pub target: ContextTarget,
+    pub column: u16,
+    pub row: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,7 +131,7 @@ enum Action {
     SelectBodyMode(BodyMode),
     SubmitRename,
     ClearLogs,
-    ContextMenu(FocusPane),
+    ToggleResponseHeaders,
     OpenAbout,
     OpenFileMenu,
     OpenMethodMenu,
@@ -121,12 +161,20 @@ pub enum HistoryRow {
     Empty,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EditorTarget {
+    LocalHeader(usize, KeyValueColumn),
+    SharedHeader(usize, KeyValueColumn),
+    BodyField(usize, KeyValueColumn),
+}
+
 impl App {
     #[cfg(test)]
     pub fn new() -> Self {
         let request = RequestDraft::default();
         let (url_input, query_input, headers_input, body_input) =
             editor_inputs_from_request(&request);
+        let body_fields = body_fields_from_input(request.body_mode, &body_input);
 
         Self {
             should_quit: false,
@@ -144,6 +192,11 @@ impl App {
             selected_history_id: None,
             history_cursor: 0,
             overlay: None,
+            context_menu: None,
+            active_editor: None,
+            body_fields,
+            response: None,
+            response_headers_expanded: false,
             rename_target_id: None,
             rename_input: String::new(),
             logs: vec!["Ready".to_string()],
@@ -193,6 +246,7 @@ impl App {
 
         let (url_input, query_input, headers_input, body_input) =
             editor_inputs_from_request(&request);
+        let body_fields = body_fields_from_input(request.body_mode, &body_input);
         let mut app = Self {
             should_quit: false,
             project: Some(project),
@@ -209,6 +263,11 @@ impl App {
             selected_history_id,
             history_cursor: 0,
             overlay: None,
+            context_menu: None,
+            active_editor: None,
+            body_fields,
+            response: None,
+            response_headers_expanded: false,
             rename_target_id: None,
             rename_input: String::new(),
             logs: vec![status.clone()],
@@ -235,6 +294,7 @@ impl App {
         &self.query_input
     }
 
+    #[cfg(test)]
     pub fn headers_input(&self) -> &str {
         &self.headers_input
     }
@@ -245,6 +305,45 @@ impl App {
 
     pub fn body_mode(&self) -> BodyMode {
         self.request.body_mode
+    }
+
+    pub fn body_fields(&self) -> &[BodyField] {
+        &self.body_fields
+    }
+
+    pub fn response(&self) -> Option<&HttpResponse> {
+        self.response.as_ref()
+    }
+
+    pub fn response_headers_expanded(&self) -> bool {
+        self.response_headers_expanded
+    }
+
+    #[cfg(test)]
+    pub fn set_response_for_test(&mut self, response: HttpResponse) {
+        self.response = Some(response);
+        self.response_headers_expanded = false;
+    }
+
+    pub fn active_local_header_cell(&self) -> Option<(usize, KeyValueColumn)> {
+        match self.active_editor {
+            Some(EditorTarget::LocalHeader(index, column)) => Some((index, column)),
+            _ => None,
+        }
+    }
+
+    pub fn active_shared_header_cell(&self) -> Option<(usize, KeyValueColumn)> {
+        match self.active_editor {
+            Some(EditorTarget::SharedHeader(index, column)) => Some((index, column)),
+            _ => None,
+        }
+    }
+
+    pub fn active_body_field_cell(&self) -> Option<(usize, KeyValueColumn)> {
+        match self.active_editor {
+            Some(EditorTarget::BodyField(index, column)) => Some((index, column)),
+            _ => None,
+        }
     }
 
     pub fn rename_input(&self) -> &str {
@@ -267,18 +366,140 @@ impl App {
         self.overlay
     }
 
+    pub fn context_menu(&self) -> Option<&ContextMenuState> {
+        self.context_menu.as_ref()
+    }
+
+    pub fn context_menu_items(&self) -> Vec<String> {
+        let Some(menu) = self.context_menu else {
+            return Vec::new();
+        };
+
+        match menu.target {
+            ContextTarget::History(row_index) => self.history_context_menu_items(row_index),
+            ContextTarget::Method => vec!["Select method".to_string()],
+            ContextTarget::LocalHeader(_) => vec![
+                "Add header below".to_string(),
+                "Delete header".to_string(),
+                "Clear header".to_string(),
+            ],
+            ContextTarget::LocalHeaders => vec!["Add header".to_string()],
+            ContextTarget::SharedHeader(_) => vec![
+                "Add shared header below".to_string(),
+                "Delete shared header".to_string(),
+                "Clear shared header".to_string(),
+            ],
+            ContextTarget::SharedHeaders => vec!["Add shared header".to_string()],
+            ContextTarget::BodyField(_) => vec![
+                "Add field below".to_string(),
+                "Delete field".to_string(),
+                "Clear field".to_string(),
+            ],
+            ContextTarget::BodyFields => vec!["Add field".to_string()],
+            ContextTarget::BodyRaw => vec!["Clear body".to_string()],
+            ContextTarget::Logs => vec!["Clear logs".to_string()],
+        }
+    }
+
     pub fn history_cursor(&self) -> usize {
         self.history_cursor
     }
 
     pub fn set_focus(&mut self, focus: FocusPane) {
+        self.active_editor = None;
         if self.focus != focus {
             self.dispatch(Action::Focus(focus));
         }
     }
 
-    pub fn open_context_menu(&mut self, focus: FocusPane) {
-        self.dispatch(Action::ContextMenu(focus));
+    pub fn open_context_menu(&mut self, target: ContextTarget, column: u16, row: u16) {
+        self.context_menu = Some(ContextMenuState {
+            target,
+            column,
+            row,
+        });
+        self.overlay = Some(Overlay::ContextMenu);
+        self.set_focus_for_context_target(target);
+        self.log("Context menu opened");
+    }
+
+    pub fn activate_context_menu_row(&mut self, row_index: usize) {
+        let Some(menu) = self.context_menu else {
+            return;
+        };
+
+        self.context_menu = None;
+        self.overlay = None;
+
+        match menu.target {
+            ContextTarget::History(history_row) => {
+                self.activate_history_context_menu_row(history_row, row_index)
+            }
+            ContextTarget::Method => {
+                if row_index == 0 {
+                    self.open_method_menu();
+                }
+            }
+            ContextTarget::LocalHeader(index) => match row_index {
+                0 => self.add_local_header_below(index),
+                1 => self.delete_local_header(index),
+                2 => self.clear_local_header(index),
+                _ => {}
+            },
+            ContextTarget::LocalHeaders => {
+                if row_index == 0 {
+                    self.add_local_header_row();
+                }
+            }
+            ContextTarget::SharedHeader(index) => match row_index {
+                0 => self.add_shared_header_below(index),
+                1 => self.delete_shared_header(index),
+                2 => self.clear_shared_header(index),
+                _ => {}
+            },
+            ContextTarget::SharedHeaders => {
+                if row_index == 0 {
+                    self.add_shared_header_row();
+                }
+            }
+            ContextTarget::BodyField(index) => match row_index {
+                0 => self.add_body_field_below(index),
+                1 => self.delete_body_field(index),
+                2 => self.clear_body_field(index),
+                _ => {}
+            },
+            ContextTarget::BodyFields => {
+                if row_index == 0 {
+                    self.add_body_field_row();
+                }
+            }
+            ContextTarget::BodyRaw => {
+                if row_index == 0 {
+                    self.clear_body();
+                }
+            }
+            ContextTarget::Logs => {
+                if row_index == 0 {
+                    self.logs.clear();
+                    self.log("Logs cleared");
+                }
+            }
+        }
+    }
+
+    pub fn add_local_header_row(&mut self) {
+        let index = self.request.headers.len();
+        self.insert_local_header(index);
+    }
+
+    pub fn add_shared_header_row(&mut self) {
+        let index = self.state.shared_headers.len();
+        self.insert_shared_header(index);
+    }
+
+    pub fn add_body_field_row(&mut self) {
+        let index = self.body_fields.len();
+        self.insert_body_field(index);
     }
 
     pub fn activate_header_action(&mut self, action: HeaderAction) {
@@ -311,6 +532,43 @@ impl App {
 
     pub fn select_body_mode_option(&mut self, mode: BodyMode) {
         self.dispatch(Action::SelectBodyMode(mode));
+    }
+
+    pub fn close_overlay(&mut self) {
+        self.dispatch(Action::CloseOverlay);
+    }
+
+    pub fn toggle_response_headers(&mut self) {
+        self.dispatch(Action::ToggleResponseHeaders);
+    }
+
+    pub fn select_local_header_cell(&mut self, index: usize, column: KeyValueColumn) {
+        self.focus = FocusPane::Headers;
+        ensure_header_row(&mut self.request.headers, index);
+        self.sync_headers_input_from_request();
+        self.active_editor = Some(EditorTarget::LocalHeader(index, column));
+        self.log(format!("Editing local header {}", column.label()));
+    }
+
+    pub fn select_shared_header_cell(&mut self, index: usize, column: KeyValueColumn) {
+        self.focus = FocusPane::State;
+        ensure_header_row(&mut self.state.shared_headers, index);
+        self.active_editor = Some(EditorTarget::SharedHeader(index, column));
+        self.log(format!("Editing shared header {}", column.label()));
+    }
+
+    pub fn select_body_field_cell(&mut self, index: usize, column: KeyValueColumn) {
+        if !self.request.body_mode.is_key_value_body() {
+            self.focus = FocusPane::Body;
+            self.active_editor = None;
+            return;
+        }
+
+        self.focus = FocusPane::Body;
+        ensure_body_field_row(&mut self.body_fields, index);
+        self.sync_body_input_from_fields();
+        self.active_editor = Some(EditorTarget::BodyField(index, column));
+        self.log(format!("Editing body field {}", column.label()));
     }
 
     pub fn history_rows(&self) -> Vec<HistoryRow> {
@@ -413,6 +671,219 @@ impl App {
         }
     }
 
+    fn history_context_menu_items(&self, row_index: usize) -> Vec<String> {
+        match self.history_rows().get(row_index) {
+            Some(HistoryRow::Host { .. }) => {
+                vec!["Add request".to_string(), "Delete host".to_string()]
+            }
+            Some(HistoryRow::Route { .. }) => {
+                vec!["Add request".to_string(), "Delete path".to_string()]
+            }
+            Some(HistoryRow::Variant { .. }) => vec![
+                "Add request".to_string(),
+                "Rename history".to_string(),
+                "Delete history".to_string(),
+            ],
+            Some(HistoryRow::Empty) | None => vec!["Add request".to_string()],
+        }
+    }
+
+    fn set_focus_for_context_target(&mut self, target: ContextTarget) {
+        self.active_editor = None;
+        match target {
+            ContextTarget::History(row_index) => {
+                self.focus = FocusPane::History;
+                self.history_cursor = row_index.min(self.history_rows().len().saturating_sub(1));
+            }
+            ContextTarget::Method => self.focus = FocusPane::Method,
+            ContextTarget::LocalHeader(_) | ContextTarget::LocalHeaders => {
+                self.focus = FocusPane::Headers
+            }
+            ContextTarget::SharedHeader(_) | ContextTarget::SharedHeaders => {
+                self.focus = FocusPane::State
+            }
+            ContextTarget::BodyField(_) | ContextTarget::BodyFields | ContextTarget::BodyRaw => {
+                self.focus = FocusPane::Body
+            }
+            ContextTarget::Logs => self.focus = FocusPane::Logs,
+        }
+    }
+
+    fn activate_history_context_menu_row(&mut self, history_row: usize, menu_row: usize) {
+        self.focus = FocusPane::History;
+        self.history_cursor = history_row.min(self.history_rows().len().saturating_sub(1));
+
+        let Some(row) = self.history_rows().get(self.history_cursor).cloned() else {
+            return;
+        };
+
+        match row {
+            HistoryRow::Host { .. } | HistoryRow::Route { .. } => match menu_row {
+                0 => self.add_local_placeholder(),
+                1 => self.delete_local_placeholder(),
+                _ => {}
+            },
+            HistoryRow::Variant { .. } => match menu_row {
+                0 => self.add_local_placeholder(),
+                1 => self.rename_local_placeholder(),
+                2 => self.delete_local_placeholder(),
+                _ => {}
+            },
+            HistoryRow::Empty => {
+                if menu_row == 0 {
+                    self.add_local_placeholder();
+                }
+            }
+        }
+    }
+
+    fn add_local_header_below(&mut self, index: usize) {
+        let insert_at = if self.request.headers.is_empty() {
+            0
+        } else {
+            index.saturating_add(1).min(self.request.headers.len())
+        };
+        self.insert_local_header(insert_at);
+    }
+
+    fn insert_local_header(&mut self, index: usize) {
+        let insert_at = index.min(self.request.headers.len());
+        self.request.headers.insert(insert_at, Header::new("", ""));
+        self.sync_headers_input_from_request();
+        self.focus = FocusPane::Headers;
+        self.active_editor = Some(EditorTarget::LocalHeader(insert_at, KeyValueColumn::Key));
+        self.log("Added local header");
+    }
+
+    fn delete_local_header(&mut self, index: usize) {
+        if index >= self.request.headers.len() {
+            self.log("No local header selected to delete");
+            return;
+        }
+
+        self.request.headers.remove(index);
+        self.sync_headers_input_from_request();
+        self.active_editor = None;
+        self.focus = FocusPane::Headers;
+        self.log("Deleted local header");
+    }
+
+    fn clear_local_header(&mut self, index: usize) {
+        ensure_header_row(&mut self.request.headers, index);
+        self.request.headers[index] = Header::new("", "");
+        self.sync_headers_input_from_request();
+        self.active_editor = Some(EditorTarget::LocalHeader(index, KeyValueColumn::Key));
+        self.focus = FocusPane::Headers;
+        self.log("Cleared local header");
+    }
+
+    fn add_shared_header_below(&mut self, index: usize) {
+        let insert_at = if self.state.shared_headers.is_empty() {
+            0
+        } else {
+            index.saturating_add(1).min(self.state.shared_headers.len())
+        };
+        self.insert_shared_header(insert_at);
+    }
+
+    fn insert_shared_header(&mut self, index: usize) {
+        let insert_at = index.min(self.state.shared_headers.len());
+        self.state
+            .shared_headers
+            .insert(insert_at, Header::new("", ""));
+        self.focus = FocusPane::State;
+        self.active_editor = Some(EditorTarget::SharedHeader(insert_at, KeyValueColumn::Key));
+        self.log("Added shared header");
+    }
+
+    fn delete_shared_header(&mut self, index: usize) {
+        if index >= self.state.shared_headers.len() {
+            self.log("No shared header selected to delete");
+            return;
+        }
+
+        self.state.shared_headers.remove(index);
+        self.active_editor = None;
+        self.focus = FocusPane::State;
+        self.log("Deleted shared header");
+    }
+
+    fn clear_shared_header(&mut self, index: usize) {
+        ensure_header_row(&mut self.state.shared_headers, index);
+        self.state.shared_headers[index] = Header::new("", "");
+        self.active_editor = Some(EditorTarget::SharedHeader(index, KeyValueColumn::Key));
+        self.focus = FocusPane::State;
+        self.log("Cleared shared header");
+    }
+
+    fn add_body_field_below(&mut self, index: usize) {
+        if !self.request.body_mode.is_key_value_body() {
+            self.log("Body fields require Form Data or URL Encoded mode");
+            return;
+        }
+
+        let insert_at = if self.body_fields.is_empty() {
+            0
+        } else {
+            index.saturating_add(1).min(self.body_fields.len())
+        };
+        self.insert_body_field(insert_at);
+    }
+
+    fn insert_body_field(&mut self, index: usize) {
+        if !self.request.body_mode.is_key_value_body() {
+            self.log("Body fields require Form Data or URL Encoded mode");
+            return;
+        }
+
+        let insert_at = index.min(self.body_fields.len());
+        self.body_fields.insert(
+            insert_at,
+            BodyField {
+                key: String::new(),
+                value: String::new(),
+            },
+        );
+        self.sync_body_input_from_fields();
+        self.focus = FocusPane::Body;
+        self.active_editor = Some(EditorTarget::BodyField(insert_at, KeyValueColumn::Key));
+        self.log("Added body field");
+    }
+
+    fn delete_body_field(&mut self, index: usize) {
+        if index >= self.body_fields.len() {
+            self.log("No body field selected to delete");
+            return;
+        }
+
+        self.body_fields.remove(index);
+        self.sync_body_input_from_fields();
+        self.active_editor = None;
+        self.focus = FocusPane::Body;
+        self.log("Deleted body field");
+    }
+
+    fn clear_body_field(&mut self, index: usize) {
+        ensure_body_field_row(&mut self.body_fields, index);
+        self.body_fields[index] = BodyField {
+            key: String::new(),
+            value: String::new(),
+        };
+        self.sync_body_input_from_fields();
+        self.active_editor = Some(EditorTarget::BodyField(index, KeyValueColumn::Key));
+        self.focus = FocusPane::Body;
+        self.log("Cleared body field");
+    }
+
+    fn clear_body(&mut self) {
+        self.body_input.clear();
+        self.body_fields.clear();
+        self.request.body.clear();
+        self.active_editor = None;
+        self.focus = FocusPane::Body;
+        self.log("Cleared body");
+    }
+
     pub fn handle_key_event(&mut self, key: KeyEvent) {
         if self.overlay == Some(Overlay::RenameHistory) && self.handle_rename_key_event(key) {
             return;
@@ -467,29 +938,44 @@ impl App {
                 self.logs.clear();
                 self.log("Logs cleared");
             }
-            Action::ContextMenu(focus) => {
-                self.focus = focus;
-                self.log(format!("Context menu placeholder for {}", focus.label()));
+            Action::ToggleResponseHeaders => {
+                if self.response.is_none() {
+                    self.log("No response headers to expand");
+                    return;
+                }
+
+                self.focus = FocusPane::Response;
+                self.response_headers_expanded = !self.response_headers_expanded;
+                if self.response_headers_expanded {
+                    self.log("Expanded response headers");
+                } else {
+                    self.log("Collapsed response headers");
+                }
             }
             Action::OpenAbout => {
+                self.context_menu = None;
                 self.overlay = Some(Overlay::About);
                 self.log("Curler menu opened");
             }
             Action::OpenFileMenu => {
+                self.context_menu = None;
                 self.overlay = Some(Overlay::FileMenu);
                 self.log("File menu opened");
             }
             Action::OpenMethodMenu => {
+                self.context_menu = None;
                 self.focus = FocusPane::Method;
                 self.overlay = Some(Overlay::MethodMenu);
                 self.log("Method menu opened");
             }
             Action::OpenHelp => {
+                self.context_menu = None;
                 self.overlay = Some(Overlay::Help);
                 self.log("Help opened");
             }
             Action::CloseOverlay => {
                 self.overlay = None;
+                self.context_menu = None;
                 self.rename_target_id = None;
                 self.rename_input.clear();
                 self.log("Overlay closed");
@@ -535,6 +1021,18 @@ impl App {
         self.query_input = query_input;
         self.headers_input = headers_input;
         self.body_input = body_input;
+        self.body_fields = body_fields_from_input(self.request.body_mode, &self.body_input);
+    }
+
+    fn sync_headers_input_from_request(&mut self) {
+        self.headers_input = headers_input_from_request(&self.request);
+    }
+
+    fn sync_body_input_from_fields(&mut self) {
+        if self.request.body_mode.is_key_value_body() {
+            self.body_input = body_input_from_fields(self.request.body_mode, &self.body_fields);
+            self.request.body.clone_from(&self.body_input);
+        }
     }
 
     fn handle_rename_key_event(&mut self, key: KeyEvent) -> bool {
@@ -564,10 +1062,15 @@ impl App {
     }
 
     fn handle_text_key_event(&mut self, key: KeyEvent) -> bool {
-        if self.overlay.is_some()
-            || !is_text_editor(self.focus)
-            || !text_input_modifiers(key.modifiers)
-        {
+        if self.overlay.is_some() || !text_input_modifiers(key.modifiers) {
+            return false;
+        }
+
+        if self.active_editor.is_some() && self.handle_key_value_key_event(key) {
+            return true;
+        }
+
+        if !is_text_editor(self.focus) {
             return false;
         }
 
@@ -591,6 +1094,30 @@ impl App {
 
         if handled {
             self.try_sync_request_from_editor();
+        }
+
+        handled
+    }
+
+    fn handle_key_value_key_event(&mut self, key: KeyEvent) -> bool {
+        let handled = match key.code {
+            KeyCode::Char(character) => {
+                self.push_key_value_char(character);
+                true
+            }
+            KeyCode::Backspace => {
+                self.pop_key_value_char();
+                true
+            }
+            KeyCode::Enter => {
+                self.advance_key_value_cell();
+                true
+            }
+            _ => false,
+        };
+
+        if handled {
+            self.sync_key_value_inputs();
         }
 
         handled
@@ -624,6 +1151,84 @@ impl App {
         }
     }
 
+    fn push_key_value_char(&mut self, character: char) {
+        match self.active_editor {
+            Some(EditorTarget::LocalHeader(index, column)) => {
+                ensure_header_row(&mut self.request.headers, index);
+                push_header_cell(&mut self.request.headers[index], column, character);
+            }
+            Some(EditorTarget::SharedHeader(index, column)) => {
+                ensure_header_row(&mut self.state.shared_headers, index);
+                push_header_cell(&mut self.state.shared_headers[index], column, character);
+            }
+            Some(EditorTarget::BodyField(index, column)) => {
+                ensure_body_field_row(&mut self.body_fields, index);
+                push_body_field_cell(&mut self.body_fields[index], column, character);
+            }
+            None => {}
+        }
+    }
+
+    fn pop_key_value_char(&mut self) {
+        match self.active_editor {
+            Some(EditorTarget::LocalHeader(index, column)) => {
+                if let Some(header) = self.request.headers.get_mut(index) {
+                    pop_header_cell(header, column);
+                }
+            }
+            Some(EditorTarget::SharedHeader(index, column)) => {
+                if let Some(header) = self.state.shared_headers.get_mut(index) {
+                    pop_header_cell(header, column);
+                }
+            }
+            Some(EditorTarget::BodyField(index, column)) => {
+                if let Some(field) = self.body_fields.get_mut(index) {
+                    pop_body_field_cell(field, column);
+                }
+            }
+            None => {}
+        }
+    }
+
+    fn advance_key_value_cell(&mut self) {
+        self.active_editor = match self.active_editor {
+            Some(EditorTarget::LocalHeader(index, KeyValueColumn::Key)) => {
+                Some(EditorTarget::LocalHeader(index, KeyValueColumn::Value))
+            }
+            Some(EditorTarget::LocalHeader(index, KeyValueColumn::Value)) => {
+                let next = index + 1;
+                ensure_header_row(&mut self.request.headers, next);
+                Some(EditorTarget::LocalHeader(next, KeyValueColumn::Key))
+            }
+            Some(EditorTarget::SharedHeader(index, KeyValueColumn::Key)) => {
+                Some(EditorTarget::SharedHeader(index, KeyValueColumn::Value))
+            }
+            Some(EditorTarget::SharedHeader(index, KeyValueColumn::Value)) => {
+                let next = index + 1;
+                ensure_header_row(&mut self.state.shared_headers, next);
+                Some(EditorTarget::SharedHeader(next, KeyValueColumn::Key))
+            }
+            Some(EditorTarget::BodyField(index, KeyValueColumn::Key)) => {
+                Some(EditorTarget::BodyField(index, KeyValueColumn::Value))
+            }
+            Some(EditorTarget::BodyField(index, KeyValueColumn::Value)) => {
+                let next = index + 1;
+                ensure_body_field_row(&mut self.body_fields, next);
+                Some(EditorTarget::BodyField(next, KeyValueColumn::Key))
+            }
+            None => None,
+        };
+    }
+
+    fn sync_key_value_inputs(&mut self) {
+        match self.active_editor {
+            Some(EditorTarget::LocalHeader(_, _)) => self.sync_headers_input_from_request(),
+            Some(EditorTarget::SharedHeader(_, _)) => {}
+            Some(EditorTarget::BodyField(_, _)) => self.sync_body_input_from_fields(),
+            None => {}
+        }
+    }
+
     fn try_sync_request_from_editor(&mut self) {
         let _ = self.sync_request_from_editor();
     }
@@ -632,6 +1237,9 @@ impl App {
         self.request.set_url(&self.url_input)?;
         self.request.set_query(&self.query_input);
         self.request.headers = parse_headers_input(&self.headers_input);
+        if self.request.body_mode.is_key_value_body() {
+            self.body_fields = body_fields_from_input(self.request.body_mode, &self.body_input);
+        }
         self.request.body.clone_from(&self.body_input);
 
         Ok(())
@@ -667,6 +1275,9 @@ impl App {
             | FocusPane::State
             | FocusPane::Body => None,
             FocusPane::Response => match key.code {
+                KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('h') => {
+                    Some(Action::ToggleResponseHeaders)
+                }
                 KeyCode::Char('v') => Some(Action::AddLocal),
                 KeyCode::Char('y') => Some(Action::EditLocal),
                 _ => None,
@@ -724,6 +1335,7 @@ impl App {
 
     fn save_current_request(&mut self) {
         self.overlay = None;
+        self.context_menu = None;
         if self.persist_current_request() {
             self.log("Saved current request");
         }
@@ -731,11 +1343,43 @@ impl App {
 
     fn run_current_request(&mut self) {
         self.overlay = None;
+        self.context_menu = None;
         if !self.persist_current_request() {
             return;
         }
 
-        self.log("Run request placeholder");
+        match self.execute_current_request() {
+            Ok(response) => {
+                let summary = response.summary(&self.request.method, &self.request.url);
+                if self.state.apply_response_body(&response.body).is_ok() {
+                    self.save_state();
+                }
+                self.response_headers_expanded = false;
+                self.response = Some(response);
+                self.log(summary);
+            }
+            Err(error) => {
+                self.response_headers_expanded = false;
+                self.response = None;
+                self.log(format!("Request failed: {error}"));
+            }
+        }
+    }
+
+    #[cfg(not(test))]
+    fn execute_current_request(&self) -> Result<HttpResponse, String> {
+        crate::http::send(&self.request, &self.state)
+    }
+
+    #[cfg(test)]
+    fn execute_current_request(&self) -> Result<HttpResponse, String> {
+        Ok(HttpResponse {
+            status: 200,
+            status_text: "OK".to_string(),
+            headers: Vec::new(),
+            body: "{}".to_string(),
+            truncated: false,
+        })
     }
 
     fn persist_current_request(&mut self) -> bool {
@@ -747,6 +1391,7 @@ impl App {
         let id = self.history.upsert(self.request.clone());
         self.selected_history_id = Some(id);
         self.state.merge_from_request(&self.request);
+        clean_empty_headers(&mut self.state.shared_headers);
 
         if let Some(project) = &self.project {
             if let Err(error) = self.history.save(&project.history_file) {
@@ -769,6 +1414,17 @@ impl App {
             && let Err(error) = self.history.save(&project.history_file)
         {
             self.log(format!("Save history failed: {error}"));
+            return false;
+        }
+
+        true
+    }
+
+    fn save_state(&mut self) -> bool {
+        if let Some(project) = &self.project
+            && let Err(error) = self.state.save(&project.state_file)
+        {
+            self.log(format!("Save state failed: {error}"));
             return false;
         }
 
@@ -893,10 +1549,12 @@ impl App {
     fn select_method(&mut self, method: &'static str) {
         self.request.method = method.to_string();
         self.overlay = None;
+        self.context_menu = None;
         self.log(format!("Method set to {method}"));
     }
 
     fn open_body_mode_selector(&mut self) {
+        self.context_menu = None;
         self.focus = FocusPane::Body;
         self.overlay = Some(Overlay::BodyModeMenu);
         self.log("Body mode menu opened");
@@ -904,7 +1562,12 @@ impl App {
 
     fn select_body_mode(&mut self, mode: BodyMode) {
         self.request.set_body_mode(mode);
+        self.body_fields = body_fields_from_input(mode, &self.body_input);
+        if mode.is_key_value_body() {
+            self.sync_body_input_from_fields();
+        }
         self.overlay = None;
+        self.context_menu = None;
         self.log(format!("Body mode set to {}", mode.label()));
     }
 
@@ -973,6 +1636,113 @@ fn parse_headers_input(input: &str) -> Vec<Header> {
         .collect()
 }
 
+fn clean_empty_headers(headers: &mut Vec<Header>) {
+    headers.retain(|header| !header.name.trim().is_empty() || !header.value.trim().is_empty());
+}
+
+fn ensure_header_row(headers: &mut Vec<Header>, index: usize) {
+    while headers.len() <= index {
+        headers.push(Header::new("", ""));
+    }
+}
+
+fn push_header_cell(header: &mut Header, column: KeyValueColumn, character: char) {
+    match column {
+        KeyValueColumn::Key => header.name.push(character),
+        KeyValueColumn::Value => header.value.push(character),
+    }
+}
+
+fn pop_header_cell(header: &mut Header, column: KeyValueColumn) {
+    match column {
+        KeyValueColumn::Key => {
+            header.name.pop();
+        }
+        KeyValueColumn::Value => {
+            header.value.pop();
+        }
+    }
+}
+
+fn ensure_body_field_row(fields: &mut Vec<BodyField>, index: usize) {
+    while fields.len() <= index {
+        fields.push(BodyField {
+            key: String::new(),
+            value: String::new(),
+        });
+    }
+}
+
+fn push_body_field_cell(field: &mut BodyField, column: KeyValueColumn, character: char) {
+    match column {
+        KeyValueColumn::Key => field.key.push(character),
+        KeyValueColumn::Value => field.value.push(character),
+    }
+}
+
+fn pop_body_field_cell(field: &mut BodyField, column: KeyValueColumn) {
+    match column {
+        KeyValueColumn::Key => {
+            field.key.pop();
+        }
+        KeyValueColumn::Value => {
+            field.value.pop();
+        }
+    }
+}
+
+fn body_fields_from_input(mode: BodyMode, input: &str) -> Vec<BodyField> {
+    if !mode.is_key_value_body() || input.is_empty() {
+        return Vec::new();
+    }
+
+    let parts = if input.contains('\n') {
+        input.lines().collect::<Vec<_>>()
+    } else {
+        input.split('&').collect::<Vec<_>>()
+    };
+
+    parts
+        .into_iter()
+        .filter_map(|part| {
+            let part = part.trim();
+            if part.is_empty() {
+                return None;
+            }
+
+            let (key, value) = part
+                .split_once('=')
+                .or_else(|| part.split_once(':'))
+                .unwrap_or((part, ""));
+            let key = key.trim();
+
+            if key.is_empty() {
+                return None;
+            }
+
+            Some(BodyField {
+                key: key.to_string(),
+                value: value.trim().to_string(),
+            })
+        })
+        .collect()
+}
+
+fn body_input_from_fields(mode: BodyMode, fields: &[BodyField]) -> String {
+    let separator = match mode {
+        BodyMode::UrlEncoded => "&",
+        BodyMode::FormData => "\n",
+        BodyMode::Raw | BodyMode::Binary => "",
+    };
+
+    fields
+        .iter()
+        .filter(|field| !field.key.trim().is_empty() || !field.value.trim().is_empty())
+        .map(|field| format!("{}={}", field.key.trim(), field.value.trim()))
+        .collect::<Vec<_>>()
+        .join(separator)
+}
+
 fn is_text_editor(focus: FocusPane) -> bool {
     matches!(
         focus,
@@ -1035,6 +1805,15 @@ impl FocusPane {
             FocusPane::Body => "Body",
             FocusPane::Response => "Response",
             FocusPane::Logs => "Logs",
+        }
+    }
+}
+
+impl KeyValueColumn {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Key => "key",
+            Self::Value => "value",
         }
     }
 }
@@ -1137,11 +1916,10 @@ mod tests {
 
         assert_eq!(app.history.entries.len(), 1);
         assert_eq!(app.history.entries[0].query.as_deref(), Some("q=rust"));
-        assert!(
-            app.logs()
-                .iter()
-                .any(|log| log == "Run request placeholder")
-        );
+        assert_eq!(app.response().map(|response| response.status), Some(200));
+        assert!(app.logs().iter().any(
+            |log| log.starts_with("GET https://api.example.com") && log.ends_with("-> 200 OK")
+        ));
     }
 
     #[test]
@@ -1175,6 +1953,191 @@ mod tests {
 
         assert_eq!(app.body_input(), "{\"hello\":true}\nsecond line");
         assert_eq!(app.request.body, "{\"hello\":true}\nsecond line");
+    }
+
+    #[test]
+    fn local_headers_support_key_value_cell_editing() {
+        let mut app = App::new();
+        app.request.headers.clear();
+        app.headers_input.clear();
+
+        app.select_local_header_cell(0, KeyValueColumn::Key);
+        type_text(&mut app, "Authorization");
+        app.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        type_text(&mut app, "Bearer {{access_token}}");
+
+        assert_eq!(
+            app.request.headers,
+            vec![Header::new("Authorization", "Bearer {{access_token}}")]
+        );
+        assert_eq!(
+            app.headers_input(),
+            "Authorization: Bearer {{access_token}}"
+        );
+    }
+
+    #[test]
+    fn shared_headers_are_editable_as_global_key_value_rows() {
+        let mut app = App::new();
+
+        app.select_shared_header_cell(0, KeyValueColumn::Key);
+        type_text(&mut app, "Authorization");
+        app.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        type_text(&mut app, "Bearer {{access_token}}");
+
+        assert_eq!(
+            app.state.shared_headers,
+            vec![Header::new("Authorization", "Bearer {{access_token}}")]
+        );
+    }
+
+    #[test]
+    fn urlencoded_body_accepts_raw_paste_and_parses_rows() {
+        let mut app = App::new();
+        app.select_body_mode_option(BodyMode::UrlEncoded);
+        app.body_input.clear();
+        app.set_focus(FocusPane::Body);
+
+        type_text(&mut app, "q=rust&page=2");
+
+        assert_eq!(app.body_input(), "q=rust&page=2");
+        assert_eq!(
+            app.body_fields(),
+            &[
+                BodyField {
+                    key: "q".to_string(),
+                    value: "rust".to_string()
+                },
+                BodyField {
+                    key: "page".to_string(),
+                    value: "2".to_string()
+                }
+            ]
+        );
+        assert_eq!(app.request.body, "q=rust&page=2");
+    }
+
+    #[test]
+    fn urlencoded_body_supports_key_value_cell_editing() {
+        let mut app = App::new();
+        app.select_body_mode_option(BodyMode::UrlEncoded);
+        app.body_input.clear();
+        app.body_fields.clear();
+
+        app.select_body_field_cell(0, KeyValueColumn::Key);
+        type_text(&mut app, "q");
+        app.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        type_text(&mut app, "rust");
+
+        assert_eq!(app.body_input(), "q=rust");
+        assert_eq!(app.request.body, "q=rust");
+    }
+
+    #[test]
+    fn context_menu_adds_and_deletes_local_headers() {
+        let mut app = App::new();
+        app.request.headers = vec![Header::new("Accept", "application/json")];
+        app.sync_headers_input_from_request();
+
+        app.open_context_menu(ContextTarget::LocalHeader(0), 10, 10);
+        assert_eq!(app.overlay(), Some(Overlay::ContextMenu));
+        assert_eq!(
+            app.context_menu_items(),
+            vec![
+                "Add header below".to_string(),
+                "Delete header".to_string(),
+                "Clear header".to_string()
+            ]
+        );
+
+        app.activate_context_menu_row(0);
+        assert_eq!(app.request.headers.len(), 2);
+        assert_eq!(
+            app.active_local_header_cell(),
+            Some((1, KeyValueColumn::Key))
+        );
+
+        app.request.headers[1] = Header::new("X-Test", "yes");
+        app.open_context_menu(ContextTarget::LocalHeader(1), 10, 10);
+        app.activate_context_menu_row(1);
+
+        assert_eq!(
+            app.request.headers,
+            vec![Header::new("Accept", "application/json")]
+        );
+        assert_eq!(app.headers_input(), "Accept: application/json");
+    }
+
+    #[test]
+    fn context_menu_controls_body_fields_and_raw_body() {
+        let mut app = App::new();
+        app.select_body_mode_option(BodyMode::UrlEncoded);
+        app.body_fields = vec![
+            BodyField {
+                key: "q".to_string(),
+                value: "rust".to_string(),
+            },
+            BodyField {
+                key: "page".to_string(),
+                value: "2".to_string(),
+            },
+        ];
+        app.sync_body_input_from_fields();
+
+        app.open_context_menu(ContextTarget::BodyField(0), 10, 10);
+        app.activate_context_menu_row(1);
+
+        assert_eq!(
+            app.body_fields(),
+            &[BodyField {
+                key: "page".to_string(),
+                value: "2".to_string()
+            }]
+        );
+        assert_eq!(app.body_input(), "page=2");
+
+        app.select_body_mode_option(BodyMode::Raw);
+        app.body_input = "{\"q\":\"rust\"}".to_string();
+        app.request.body.clone_from(&app.body_input);
+        app.open_context_menu(ContextTarget::BodyRaw, 10, 10);
+        app.activate_context_menu_row(0);
+
+        assert!(app.body_input().is_empty());
+        assert!(app.request.body.is_empty());
+    }
+
+    #[test]
+    fn context_menu_can_open_method_dropdown() {
+        let mut app = App::new();
+
+        app.open_context_menu(ContextTarget::Method, 10, 10);
+        assert_eq!(app.context_menu_items(), vec!["Select method".to_string()]);
+        app.activate_context_menu_row(0);
+
+        assert_eq!(app.overlay(), Some(Overlay::MethodMenu));
+    }
+
+    #[test]
+    fn response_headers_can_be_expanded_and_collapsed() {
+        let mut app = App::new();
+        app.set_response_for_test(HttpResponse {
+            status: 200,
+            status_text: "OK".to_string(),
+            headers: (0..10)
+                .map(|index| Header::new(format!("X-Test-{index}"), "yes"))
+                .collect(),
+            body: String::new(),
+            truncated: false,
+        });
+
+        assert!(!app.response_headers_expanded());
+
+        app.toggle_response_headers();
+        assert!(app.response_headers_expanded());
+        assert_eq!(app.focus(), FocusPane::Response);
+
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+        assert!(!app.response_headers_expanded());
     }
 
     #[test]
