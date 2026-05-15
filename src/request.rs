@@ -245,10 +245,8 @@ impl BodyMode {
 }
 
 fn parse_curl_args(args: &[String]) -> Result<RequestDraft, String> {
-    let args = trim_curl_binary(args);
-
     if args.is_empty() {
-        return Err("no curl arguments were provided".to_string());
+        return Err("no request arguments were provided".to_string());
     }
 
     let mut method = None;
@@ -431,7 +429,7 @@ fn parse_curl_args(args: &[String]) -> Result<RequestDraft, String> {
             "POST".to_string()
         }
     });
-    let url = url.ok_or_else(|| "no URL found in curl arguments".to_string())?;
+    let url = url.ok_or_else(|| "no URL found in request arguments".to_string())?;
     let parts = parse_url(&url)?;
 
     Ok(RequestDraft {
@@ -446,18 +444,6 @@ fn parse_curl_args(args: &[String]) -> Result<RequestDraft, String> {
         body,
         raw_args: args.to_vec(),
     })
-}
-
-fn trim_curl_binary(args: &[String]) -> &[String] {
-    if args
-        .first()
-        .and_then(|arg| arg.rsplit('/').next())
-        .is_some_and(|arg| arg == "curl")
-    {
-        &args[1..]
-    } else {
-        args
-    }
 }
 
 fn required_value(args: &[String], index: usize, flag: &str) -> Result<String, String> {

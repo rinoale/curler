@@ -56,7 +56,18 @@ cargo run -- https://example.com
 You can also pass curl-like arguments:
 
 ```sh
-cargo run -- curl -X POST https://example.com/api -H "Authorization: Bearer {{access_token}}" -d '{"hello":true}'
+cargo run -- -X POST https://example.com/api -H "Authorization: Bearer {{access_token}}" -d '{"hello":true}'
+```
+
+## CLI Options
+
+Curler-level flags are recognized only when they are the sole argument, so curl flags can still be imported.
+
+```sh
+curler --help
+curler -h
+curler --version
+curler -v
 ```
 
 ## Install

@@ -49,6 +49,14 @@ This file tracks the gap between the current `curler` scaffold and a fuller mode
 - Add request duplication.
 - Add real "new host", "new path", and "new request" flows from the history pane.
 
+## CLI
+
+- Add `--print-import` to parse curl/request arguments and print the imported draft without starting the TUI.
+- Add `--project-root <path>` to override project discovery.
+- Add `--history-dir <path>` for custom storage during tests or scripted workflows.
+- Add `--no-history` for one-off requests that should not persist.
+- Add `--run` to import, save, execute, print a compact result, and exit without opening the TUI.
+
 ## Response Handling
 
 - Pretty-print JSON responses.
