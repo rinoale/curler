@@ -132,16 +132,6 @@ fn run_app(terminal: &mut Tui, mut app: App) -> io::Result<()> {
                     let size = terminal.size()?;
                     let area = Rect::new(0, 0, size.width, size.height);
 
-                    if app.overlay() == Some(app::Overlay::ContextMenu) {
-                        if let Some(row_index) =
-                            ui::context_menu_row_at(area, &app, mouse.column, mouse.row)
-                        {
-                            app.activate_context_menu_row(row_index);
-                            continue;
-                        }
-                        app.close_overlay();
-                    }
-
                     if app.overlay() == Some(app::Overlay::Help) {
                         if let Some(action) = ui::header_action_at(area, mouse.column, mouse.row) {
                             app.activate_header_action(action);
@@ -149,30 +139,7 @@ fn run_app(terminal: &mut Tui, mut app: App) -> io::Result<()> {
                         continue;
                     }
 
-                    if app.overlay() == Some(app::Overlay::FileMenu)
-                        && let Some(row_index) = ui::file_menu_row_at(area, mouse.column, mouse.row)
-                    {
-                        app.activate_file_menu_row(row_index);
-                        continue;
-                    }
-
-                    if app.overlay() == Some(app::Overlay::MethodMenu)
-                        && let Some(row_index) =
-                            ui::method_menu_row_at(area, &app, mouse.column, mouse.row)
-                    {
-                        if let Some(method) = ui::method_for_menu_row(row_index) {
-                            app.select_method_option(method);
-                        }
-                        continue;
-                    }
-
-                    if app.overlay() == Some(app::Overlay::BodyModeMenu)
-                        && let Some(row_index) =
-                            ui::body_mode_menu_row_at(area, &app, mouse.column, mouse.row)
-                    {
-                        if let Some(mode) = ui::body_mode_for_menu_row(row_index) {
-                            app.select_body_mode_option(mode);
-                        }
+                    if handle_menu_overlay_click(&mut app, area, mouse.column, mouse.row) {
                         continue;
                     }
 
@@ -277,6 +244,48 @@ fn run_app(terminal: &mut Tui, mut app: App) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+fn handle_menu_overlay_click(app: &mut App, area: Rect, column: u16, row: u16) -> bool {
+    match app.overlay() {
+        Some(app::Overlay::ContextMenu) => {
+            if let Some(row_index) = ui::context_menu_row_at(area, app, column, row) {
+                app.activate_context_menu_row(row_index);
+            } else {
+                app.close_overlay();
+            }
+            true
+        }
+        Some(app::Overlay::FileMenu) => {
+            if let Some(row_index) = ui::file_menu_row_at(area, column, row) {
+                app.activate_file_menu_row(row_index);
+            } else {
+                app.close_overlay();
+            }
+            true
+        }
+        Some(app::Overlay::MethodMenu) => {
+            if let Some(row_index) = ui::method_menu_row_at(area, app, column, row) {
+                if let Some(method) = ui::method_for_menu_row(row_index) {
+                    app.select_method_option(method);
+                }
+            } else {
+                app.close_overlay();
+            }
+            true
+        }
+        Some(app::Overlay::BodyModeMenu) => {
+            if let Some(row_index) = ui::body_mode_menu_row_at(area, app, column, row) {
+                if let Some(mode) = ui::body_mode_for_menu_row(row_index) {
+                    app.select_body_mode_option(mode);
+                }
+            } else {
+                app.close_overlay();
+            }
+            true
+        }
+        _ => false,
+    }
 }
 
 fn apply_resize_target(app: &mut App, area: Rect, target: ui::ResizeTarget, column: u16, row: u16) {
@@ -393,5 +402,49 @@ mod tests {
         assert!(text.contains("--version"));
         assert!(text.contains("curler <url> [curl-compatible-options]"));
         assert!(!text.contains("curler curl"));
+    }
+
+    #[test]
+    fn outside_click_closes_file_menu() {
+        let area = Rect::new(0, 0, 120, 36);
+        let mut app = App::new();
+        app.activate_header_action(app::HeaderAction::File);
+
+        assert!(handle_menu_overlay_click(&mut app, area, 80, 20));
+        assert_eq!(app.overlay(), None);
+    }
+
+    #[test]
+    fn outside_click_closes_method_menu_without_reopening() {
+        let area = Rect::new(0, 0, 120, 36);
+        let mut app = App::new();
+        app.open_method_menu();
+
+        assert!(handle_menu_overlay_click(&mut app, area, 37, 7));
+        assert_eq!(app.overlay(), None);
+    }
+
+    #[test]
+    fn outside_click_closes_body_mode_menu() {
+        let area = Rect::new(0, 0, 120, 36);
+        let mut app = App::new();
+        app.open_body_mode_menu();
+
+        assert!(handle_menu_overlay_click(&mut app, area, 1, 7));
+        assert_eq!(app.overlay(), None);
+    }
+
+    #[test]
+    fn menu_click_selects_dropdown_item() {
+        let area = Rect::new(0, 0, 120, 36);
+        let mut app = App::new();
+        app.open_method_menu();
+
+        let row = ui::method_menu_row_at(area, &app, 37, 11).expect("menu row");
+        assert_eq!(ui::method_for_menu_row(row), Some("POST"));
+        assert!(handle_menu_overlay_click(&mut app, area, 37, 11));
+
+        assert_eq!(app.overlay(), None);
+        assert_eq!(app.request().method, "POST");
     }
 }
