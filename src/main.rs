@@ -63,6 +63,7 @@ fn restore_terminal(terminal: &mut Tui) -> io::Result<()> {
 
 fn run_app(terminal: &mut Tui, mut app: App) -> io::Result<()> {
     while !app.should_quit() {
+        app.poll_request_runner();
         terminal.draw(|frame| ui::draw(frame, &app))?;
 
         if event::poll(Duration::from_millis(250))? {

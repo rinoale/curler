@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, io};
+use std::{collections::BTreeSet, io, sync::mpsc, thread};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -32,6 +32,10 @@ pub struct App {
     body_fields: Vec<BodyField>,
     response: Option<HttpResponse>,
     response_headers_expanded: bool,
+    active_run: Option<ActiveRun>,
+    next_run_id: u64,
+    run_tx: mpsc::Sender<RunResult>,
+    run_rx: mpsc::Receiver<RunResult>,
     rename_target_id: Option<String>,
     rename_input: String,
     logs: Vec<String>,
@@ -101,6 +105,20 @@ pub struct ContextMenuState {
     pub target: ContextTarget,
     pub column: u16,
     pub row: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveRun {
+    pub id: u64,
+    pub summary: String,
+}
+
+#[derive(Debug)]
+struct RunResult {
+    id: u64,
+    method: String,
+    url: String,
+    result: Result<HttpResponse, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,6 +193,7 @@ impl App {
         let (url_input, query_input, headers_input, body_input) =
             editor_inputs_from_request(&request);
         let body_fields = body_fields_from_input(request.body_mode, &body_input);
+        let (run_tx, run_rx) = mpsc::channel();
 
         Self {
             should_quit: false,
@@ -197,6 +216,10 @@ impl App {
             body_fields,
             response: None,
             response_headers_expanded: false,
+            active_run: None,
+            next_run_id: 1,
+            run_tx,
+            run_rx,
             rename_target_id: None,
             rename_input: String::new(),
             logs: vec!["Ready".to_string()],
@@ -247,6 +270,7 @@ impl App {
         let (url_input, query_input, headers_input, body_input) =
             editor_inputs_from_request(&request);
         let body_fields = body_fields_from_input(request.body_mode, &body_input);
+        let (run_tx, run_rx) = mpsc::channel();
         let mut app = Self {
             should_quit: false,
             project: Some(project),
@@ -268,6 +292,10 @@ impl App {
             body_fields,
             response: None,
             response_headers_expanded: false,
+            active_run: None,
+            next_run_id: 1,
+            run_tx,
+            run_rx,
             rename_target_id: None,
             rename_input: String::new(),
             logs: vec![status.clone()],
@@ -317,6 +345,10 @@ impl App {
 
     pub fn response_headers_expanded(&self) -> bool {
         self.response_headers_expanded
+    }
+
+    pub fn active_run(&self) -> Option<&ActiveRun> {
+        self.active_run.as_ref()
     }
 
     #[cfg(test)]
@@ -540,6 +572,12 @@ impl App {
 
     pub fn toggle_response_headers(&mut self) {
         self.dispatch(Action::ToggleResponseHeaders);
+    }
+
+    pub fn poll_request_runner(&mut self) {
+        while let Ok(result) = self.run_rx.try_recv() {
+            self.apply_run_result(result);
+        }
     }
 
     pub fn select_local_header_cell(&mut self, index: usize, column: KeyValueColumn) {
@@ -1348,9 +1386,44 @@ impl App {
             return;
         }
 
-        match self.execute_current_request() {
+        let id = self.next_run_id;
+        self.next_run_id = self.next_run_id.saturating_add(1);
+        let request = self.request.clone();
+        let state = self.state.clone();
+        let method = request.method.clone();
+        let url = request.url.clone();
+        let summary = format!("{method} {url}");
+        let tx = self.run_tx.clone();
+
+        self.response_headers_expanded = false;
+        self.response = None;
+        self.active_run = Some(ActiveRun {
+            id,
+            summary: summary.clone(),
+        });
+        self.log(format!("Running {summary}"));
+
+        thread::spawn(move || {
+            let result = execute_request(&request, &state);
+            let _ = tx.send(RunResult {
+                id,
+                method,
+                url,
+                result,
+            });
+        });
+    }
+
+    fn apply_run_result(&mut self, run_result: RunResult) {
+        if self.active_run.as_ref().map(|run| run.id) != Some(run_result.id) {
+            return;
+        }
+
+        self.active_run = None;
+
+        match run_result.result {
             Ok(response) => {
-                let summary = response.summary(&self.request.method, &self.request.url);
+                let summary = response.summary(&run_result.method, &run_result.url);
                 if self.state.apply_response_body(&response.body).is_ok() {
                     self.save_state();
                 }
@@ -1364,22 +1437,6 @@ impl App {
                 self.log(format!("Request failed: {error}"));
             }
         }
-    }
-
-    #[cfg(not(test))]
-    fn execute_current_request(&self) -> Result<HttpResponse, String> {
-        crate::http::send(&self.request, &self.state)
-    }
-
-    #[cfg(test)]
-    fn execute_current_request(&self) -> Result<HttpResponse, String> {
-        Ok(HttpResponse {
-            status: 200,
-            status_text: "OK".to_string(),
-            headers: Vec::new(),
-            body: "{}".to_string(),
-            truncated: false,
-        })
     }
 
     fn persist_current_request(&mut self) -> bool {
@@ -1793,6 +1850,22 @@ fn global_action(key: KeyEvent) -> Option<Action> {
     }
 }
 
+#[cfg(not(test))]
+fn execute_request(request: &RequestDraft, state: &ProjectState) -> Result<HttpResponse, String> {
+    crate::http::send(request, state)
+}
+
+#[cfg(test)]
+fn execute_request(_request: &RequestDraft, _state: &ProjectState) -> Result<HttpResponse, String> {
+    Ok(HttpResponse {
+        status: 200,
+        status_text: "OK".to_string(),
+        headers: Vec::new(),
+        body: "{}".to_string(),
+        truncated: false,
+    })
+}
+
 impl FocusPane {
     pub fn label(self) -> &'static str {
         match self {
@@ -1831,6 +1904,20 @@ mod tests {
             };
             app.handle_key_event(KeyEvent::new(code, KeyModifiers::NONE));
         }
+    }
+
+    fn poll_until_request_finishes(app: &mut App) {
+        for _ in 0..1000 {
+            app.poll_request_runner();
+
+            if app.active_run().is_none() {
+                return;
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+
+        app.poll_request_runner();
     }
 
     #[test]
@@ -1916,6 +2003,10 @@ mod tests {
 
         assert_eq!(app.history.entries.len(), 1);
         assert_eq!(app.history.entries[0].query.as_deref(), Some("q=rust"));
+        assert!(app.active_run().is_some());
+
+        poll_until_request_finishes(&mut app);
+
         assert_eq!(app.response().map(|response| response.status), Some(200));
         assert!(app.logs().iter().any(
             |log| log.starts_with("GET https://api.example.com") && log.ends_with("-> 200 OK")

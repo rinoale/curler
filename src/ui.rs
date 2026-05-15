@@ -653,6 +653,25 @@ fn draw_response(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn response_lines(app: &App) -> Vec<Line<'static>> {
+    if let Some(run) = app.active_run() {
+        return vec![
+            Line::from(vec![
+                Span::styled("Running ", Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    run.summary.clone(),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled(
+                "The UI remains usable while the request runs.",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ];
+    }
+
     let Some(response) = app.response() else {
         return vec![Line::from("No response yet")];
     };
