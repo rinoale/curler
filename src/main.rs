@@ -62,6 +62,8 @@ fn restore_terminal(terminal: &mut Tui) -> io::Result<()> {
 }
 
 fn run_app(terminal: &mut Tui, mut app: App) -> io::Result<()> {
+    let mut resize_target = None;
+
     while !app.should_quit() {
         app.poll_request_runner();
         terminal.draw(|frame| ui::draw(frame, &app))?;
@@ -101,7 +103,7 @@ fn run_app(terminal: &mut Tui, mut app: App) -> io::Result<()> {
 
                     if app.overlay() == Some(app::Overlay::MethodMenu)
                         && let Some(row_index) =
-                            ui::method_menu_row_at(area, mouse.column, mouse.row)
+                            ui::method_menu_row_at(area, &app, mouse.column, mouse.row)
                     {
                         if let Some(method) = ui::method_for_menu_row(row_index) {
                             app.select_method_option(method);
@@ -111,11 +113,18 @@ fn run_app(terminal: &mut Tui, mut app: App) -> io::Result<()> {
 
                     if app.overlay() == Some(app::Overlay::BodyModeMenu)
                         && let Some(row_index) =
-                            ui::body_mode_menu_row_at(area, mouse.column, mouse.row)
+                            ui::body_mode_menu_row_at(area, &app, mouse.column, mouse.row)
                     {
                         if let Some(mode) = ui::body_mode_for_menu_row(row_index) {
                             app.select_body_mode_option(mode);
                         }
+                        continue;
+                    }
+
+                    if let Some(target) = ui::resize_target_at(area, &app, mouse.column, mouse.row)
+                    {
+                        resize_target = Some(target);
+                        apply_resize_target(&mut app, area, target, mouse.column, mouse.row);
                         continue;
                     }
 
@@ -124,13 +133,15 @@ fn run_app(terminal: &mut Tui, mut app: App) -> io::Result<()> {
                         continue;
                     }
 
-                    if ui::pane_at(area, mouse.column, mouse.row) == Some(app::FocusPane::Method) {
+                    if ui::pane_at(area, &app, mouse.column, mouse.row)
+                        == Some(app::FocusPane::Method)
+                    {
                         app.set_focus(app::FocusPane::Method);
                         app.open_method_menu();
                         continue;
                     }
 
-                    if ui::body_mode_control_at(area, mouse.column, mouse.row) {
+                    if ui::body_mode_control_at(area, &app, mouse.column, mouse.row) {
                         app.set_focus(app::FocusPane::Body);
                         app.open_body_mode_menu();
                         continue;
@@ -177,11 +188,12 @@ fn run_app(terminal: &mut Tui, mut app: App) -> io::Result<()> {
                         continue;
                     }
 
-                    if let Some(pane) = ui::pane_at(area, mouse.column, mouse.row) {
+                    if let Some(pane) = ui::pane_at(area, &app, mouse.column, mouse.row) {
                         app.set_focus(pane);
                     }
 
-                    if let Some(row_index) = ui::history_row_at(area, mouse.column, mouse.row) {
+                    if let Some(row_index) = ui::history_row_at(area, &app, mouse.column, mouse.row)
+                    {
                         app.activate_history_row(row_index);
                     }
                 }
@@ -193,6 +205,17 @@ fn run_app(terminal: &mut Tui, mut app: App) -> io::Result<()> {
                         app.open_context_menu(target, mouse.column, mouse.row);
                     }
                 }
+                Event::Mouse(mouse) if mouse.kind == MouseEventKind::Drag(MouseButton::Left) => {
+                    let size = terminal.size()?;
+                    let area = Rect::new(0, 0, size.width, size.height);
+
+                    if let Some(target) = resize_target {
+                        apply_resize_target(&mut app, area, target, mouse.column, mouse.row);
+                    }
+                }
+                Event::Mouse(mouse) if mouse.kind == MouseEventKind::Up(MouseButton::Left) => {
+                    resize_target = None;
+                }
                 _ => {}
             }
         }
@@ -201,12 +224,45 @@ fn run_app(terminal: &mut Tui, mut app: App) -> io::Result<()> {
     Ok(())
 }
 
+fn apply_resize_target(app: &mut App, area: Rect, target: ui::ResizeTarget, column: u16, row: u16) {
+    match target {
+        ui::ResizeTarget::History => {
+            let width = ui::history_width_from_column(area, column);
+            app.set_history_width(width);
+        }
+        ui::ResizeTarget::RequestHeight => {
+            let height = ui::request_height_from_row(area, app, row);
+            app.set_request_height(height);
+        }
+        ui::ResizeTarget::RequestMethod => {
+            let width = ui::request_method_width_from_column(area, app, column);
+            app.set_request_method_width(width);
+        }
+        ui::ResizeTarget::RequestUrl => {
+            let width = ui::request_url_width_from_column(area, app, column);
+            app.set_request_url_width(width);
+        }
+        ui::ResizeTarget::HeaderState => {
+            let width = ui::editor_header_width_from_column(area, app, column);
+            app.set_editor_headers_width(width);
+        }
+        ui::ResizeTarget::HeaderBody => {
+            let height = ui::editor_header_height_from_row(area, app, row);
+            app.set_editor_headers_height(height);
+        }
+        ui::ResizeTarget::BodyResponse => {
+            let width = ui::body_width_from_column(area, app, column);
+            app.set_body_width(width);
+        }
+    }
+}
+
 fn context_target_at(area: Rect, app: &App, column: u16, row: u16) -> Option<ContextTarget> {
-    if let Some(row_index) = ui::history_row_at(area, column, row) {
+    if let Some(row_index) = ui::history_row_at(area, app, column, row) {
         return Some(ContextTarget::History(row_index));
     }
 
-    if ui::pane_at(area, column, row) == Some(app::FocusPane::Method) {
+    if ui::pane_at(area, app, column, row) == Some(app::FocusPane::Method) {
         return Some(ContextTarget::Method);
     }
 
@@ -234,7 +290,7 @@ fn context_target_at(area: Rect, app: &App, column: u16, row: u16) -> Option<Con
         return Some(ContextTarget::BodyFields);
     }
 
-    match ui::pane_at(area, column, row) {
+    match ui::pane_at(area, app, column, row) {
         Some(app::FocusPane::Headers) => Some(ContextTarget::LocalHeaders),
         Some(app::FocusPane::State) => Some(ContextTarget::SharedHeaders),
         Some(app::FocusPane::Body) if app.body_mode().is_key_value_body() => {

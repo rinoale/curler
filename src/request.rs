@@ -369,15 +369,16 @@ fn parse_curl_args(args: &[String]) -> Result<RequestDraft, String> {
         }
 
         if is_data_flag(arg) {
-            body_parts.push(required_value(args, index, arg)?);
-            body_mode = body_mode_for_data_flag(arg);
+            let value = required_value(args, index, arg)?;
+            body_mode = body_mode_for_data_value(arg, &value);
+            body_parts.push(value);
             index += 2;
             continue;
         }
 
         if let Some(value) = data_value_from_inline_flag(arg) {
+            body_mode = body_mode_for_data_value(arg, value);
             body_parts.push(value.to_string());
-            body_mode = body_mode_for_data_flag(arg);
             index += 1;
             continue;
         }
@@ -419,6 +420,8 @@ fn parse_curl_args(args: &[String]) -> Result<RequestDraft, String> {
         ensure_header(&mut headers, "Content-Type", "application/json");
         ensure_header(&mut headers, "Accept", "application/json");
     }
+
+    body_mode = body_mode_for_content_type(&headers).unwrap_or(body_mode);
 
     let body = body_parts.join("&");
     let method = method.unwrap_or_else(|| {
@@ -552,17 +555,57 @@ fn data_value_from_inline_flag(arg: &str) -> Option<&str> {
     None
 }
 
-fn body_mode_for_data_flag(arg: &str) -> BodyMode {
-    if arg == "-F"
+fn body_mode_for_data_value(arg: &str, value: &str) -> BodyMode {
+    if is_form_flag(arg) {
+        if value.contains('=') {
+            BodyMode::FormData
+        } else {
+            BodyMode::Raw
+        }
+    } else if arg == "--data-urlencode" || arg.starts_with("--data-urlencode=") {
+        BodyMode::UrlEncoded
+    } else if value.contains('=') && !looks_like_structured_raw_body(value) {
+        BodyMode::UrlEncoded
+    } else {
+        BodyMode::Raw
+    }
+}
+
+fn is_form_flag(arg: &str) -> bool {
+    arg == "-F"
         || arg == "--form"
         || arg == "--form-string"
         || arg.starts_with("-F")
         || arg.starts_with("--form=")
         || arg.starts_with("--form-string=")
-    {
-        BodyMode::FormData
+}
+
+fn looks_like_structured_raw_body(value: &str) -> bool {
+    let value = value.trim_start();
+
+    value.starts_with('{') || value.starts_with('[') || value.starts_with('<')
+}
+
+fn body_mode_for_content_type(headers: &[Header]) -> Option<BodyMode> {
+    let content_type = headers
+        .iter()
+        .rev()
+        .find(|header| header.name.eq_ignore_ascii_case("content-type"))?
+        .value
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+
+    if content_type == "application/json" || content_type.ends_with("+json") {
+        Some(BodyMode::Raw)
+    } else if content_type == "application/x-www-form-urlencoded" {
+        Some(BodyMode::UrlEncoded)
+    } else if content_type == "multipart/form-data" {
+        Some(BodyMode::FormData)
     } else {
-        BodyMode::UrlEncoded
+        None
     }
 }
 
@@ -698,8 +741,36 @@ mod tests {
         assert_eq!(request.query.as_deref(), Some("id=1"));
         assert_eq!(request.headers.len(), 2);
         assert_eq!(request.cookies.len(), 2);
-        assert_eq!(request.body_mode, BodyMode::UrlEncoded);
+        assert_eq!(request.body_mode, BodyMode::Raw);
         assert_eq!(request.body, "{\"name\":\"Ada\"}");
+    }
+
+    #[test]
+    fn json_content_type_imports_data_as_raw_body() {
+        let request = RequestDraft::from_curl_args(&strings(&[
+            "-X",
+            "POST",
+            "https://example.com/api/users",
+            "-H",
+            "Authorization: Bearer {{access_token}}",
+            "-H",
+            "Content-Type: application/json",
+            "-H",
+            "X-Client: curler-demo",
+            "-d",
+            "{\"name\":\"Ada Lovelace\",\"role\":\"admin\",\"active\":true}",
+        ]))
+        .expect("request parses");
+
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.body_mode, BodyMode::Raw);
+        assert_eq!(
+            request.body,
+            "{\"name\":\"Ada Lovelace\",\"role\":\"admin\",\"active\":true}"
+        );
+        assert!(request.headers.iter().any(|header| {
+            header.name.eq_ignore_ascii_case("content-type") && header.value == "application/json"
+        }));
     }
 
     #[test]
@@ -725,6 +796,22 @@ mod tests {
         .expect("request parses");
 
         assert_eq!(request.body_mode, BodyMode::FormData);
+    }
+
+    #[test]
+    fn form_flag_without_field_name_stays_raw() {
+        let request = RequestDraft::from_curl_args(&strings(&[
+            "https://api.example.com/upload",
+            "-F",
+            "{\"name\":\"Ada Lovelace\",\"role\":\"admin\",\"active\":true}",
+        ]))
+        .expect("request parses");
+
+        assert_eq!(request.body_mode, BodyMode::Raw);
+        assert_eq!(
+            request.body,
+            "{\"name\":\"Ada Lovelace\",\"role\":\"admin\",\"active\":true}"
+        );
     }
 
     #[test]

@@ -32,6 +32,13 @@ pub struct App {
     body_fields: Vec<BodyField>,
     response: Option<HttpResponse>,
     response_headers_expanded: bool,
+    history_width: Option<u16>,
+    request_height: Option<u16>,
+    request_method_width: Option<u16>,
+    request_url_width: Option<u16>,
+    editor_headers_height: Option<u16>,
+    editor_headers_width: Option<u16>,
+    body_width: Option<u16>,
     active_run: Option<ActiveRun>,
     next_run_id: u64,
     run_tx: mpsc::Sender<RunResult>,
@@ -216,6 +223,13 @@ impl App {
             body_fields,
             response: None,
             response_headers_expanded: false,
+            history_width: None,
+            request_height: None,
+            request_method_width: None,
+            request_url_width: None,
+            editor_headers_height: None,
+            editor_headers_width: None,
+            body_width: None,
             active_run: None,
             next_run_id: 1,
             run_tx,
@@ -292,6 +306,13 @@ impl App {
             body_fields,
             response: None,
             response_headers_expanded: false,
+            history_width: None,
+            request_height: None,
+            request_method_width: None,
+            request_url_width: None,
+            editor_headers_height: None,
+            editor_headers_width: None,
+            body_width: None,
             active_run: None,
             next_run_id: 1,
             run_tx,
@@ -349,6 +370,62 @@ impl App {
 
     pub fn active_run(&self) -> Option<&ActiveRun> {
         self.active_run.as_ref()
+    }
+
+    pub fn history_width(&self) -> Option<u16> {
+        self.history_width
+    }
+
+    pub fn set_history_width(&mut self, width: u16) {
+        self.history_width = Some(width);
+    }
+
+    pub fn request_height(&self) -> Option<u16> {
+        self.request_height
+    }
+
+    pub fn set_request_height(&mut self, height: u16) {
+        self.request_height = Some(height);
+    }
+
+    pub fn request_method_width(&self) -> Option<u16> {
+        self.request_method_width
+    }
+
+    pub fn set_request_method_width(&mut self, width: u16) {
+        self.request_method_width = Some(width);
+    }
+
+    pub fn request_url_width(&self) -> Option<u16> {
+        self.request_url_width
+    }
+
+    pub fn set_request_url_width(&mut self, width: u16) {
+        self.request_url_width = Some(width);
+    }
+
+    pub fn editor_headers_height(&self) -> Option<u16> {
+        self.editor_headers_height
+    }
+
+    pub fn set_editor_headers_height(&mut self, height: u16) {
+        self.editor_headers_height = Some(height);
+    }
+
+    pub fn editor_headers_width(&self) -> Option<u16> {
+        self.editor_headers_width
+    }
+
+    pub fn set_editor_headers_width(&mut self, width: u16) {
+        self.editor_headers_width = Some(width);
+    }
+
+    pub fn body_width(&self) -> Option<u16> {
+        self.body_width
+    }
+
+    pub fn set_body_width(&mut self, width: u16) {
+        self.body_width = Some(width);
     }
 
     #[cfg(test)]
@@ -1767,10 +1844,7 @@ fn body_fields_from_input(mode: BodyMode, input: &str) -> Vec<BodyField> {
                 return None;
             }
 
-            let (key, value) = part
-                .split_once('=')
-                .or_else(|| part.split_once(':'))
-                .unwrap_or((part, ""));
+            let (key, value) = part.split_once('=')?;
             let key = key.trim();
 
             if key.is_empty() {
@@ -2106,6 +2180,16 @@ mod tests {
             ]
         );
         assert_eq!(app.request.body, "q=rust&page=2");
+    }
+
+    #[test]
+    fn key_value_body_does_not_split_json_on_colons() {
+        let fields = body_fields_from_input(
+            BodyMode::FormData,
+            "{\"name\":\"Ada Lovelace\",\"role\":\"admin\",\"active\":true}",
+        );
+
+        assert!(fields.is_empty());
     }
 
     #[test]

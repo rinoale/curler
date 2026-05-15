@@ -28,6 +28,7 @@
 - Plain query-string input.
 - Local header key/value editor with add, clear, and delete interactions.
 - Shared header key/value editor for project state.
+- Central workspace pane dividers are draggable; Menu, Actions, and Logs stay fixed.
 - Body modes for Raw, Form Data, URL Encoded, and Binary.
 - Form Data and URL Encoded body key/value editors.
 - Raw body text input.
@@ -120,6 +121,7 @@ curler
 - Left-click history rows to expand/select.
 - Left-click `Run`, `File`, `Help`, and dropdown options.
 - Left-click `+ Add Header`, `+ Add Shared Header`, or `+ Add Field` to create new rows.
+- Drag central workspace pane borders to resize. Menu, Actions, and Logs are fixed.
 - Right-click supported components to open context-specific menus.
 
 ## Project Data

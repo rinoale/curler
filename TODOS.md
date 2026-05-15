@@ -35,6 +35,10 @@ This file tracks the gap between the current `curler` scaffold and a fuller mode
 
 ## Request Editing
 
+- Keep curl argument import faithful as the first priority; avoid surprising transformations when importing existing curl commands.
+- Add import diagnostics that distinguish curl-faithful parsing from Curler-friendly recovery, such as malformed `-F` JSON imported as Raw with a warning.
+- Preserve body content when switching body modes instead of destructively rewriting unsupported conversions.
+- Add optional raw-body-to-form-data parsing support for simple `key=value` payloads, with no mutation when conversion is not possible.
 - Implement real multipart form-data encoding.
 - Add file upload support for multipart form-data.
 - Add binary request body support beyond placeholder mode.

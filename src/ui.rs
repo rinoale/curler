@@ -12,11 +12,24 @@ use crate::{
 };
 
 const HISTORY_WIDTH: u16 = 36;
+const MIN_HISTORY_WIDTH: u16 = 18;
+const MIN_EDITOR_WIDTH: u16 = 40;
 const CELL_GAP: u16 = 1;
 const MIN_KEY_CELL_WIDTH: u16 = 12;
 const MAX_KEY_CELL_WIDTH: u16 = 24;
 const MIN_VALUE_CELL_WIDTH: u16 = 6;
 const RESPONSE_HEADER_PREVIEW_LIMIT: usize = 8;
+const DEFAULT_REQUEST_HEIGHT: u16 = 3;
+const MIN_REQUEST_HEIGHT: u16 = 3;
+const DEFAULT_METHOD_WIDTH: u16 = 24;
+const MIN_REQUEST_PANE_WIDTH: u16 = 12;
+const DEFAULT_MIN_LOWER_EDITOR_HEIGHT: u16 = 4;
+const DRAG_MIN_LOWER_EDITOR_HEIGHT: u16 = 2;
+const MIN_HEADER_STATE_HEIGHT: u16 = 5;
+const MIN_HEADER_STATE_COLUMN_WIDTH: u16 = 18;
+const DEFAULT_LOCAL_HEADERS_PERCENT: u16 = 60;
+const MIN_LOWER_COLUMN_WIDTH: u16 = 18;
+const DEFAULT_BODY_PERCENT: u16 = 45;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct KeyValueLayout {
@@ -83,9 +96,20 @@ const BODY_MODE_OPTIONS: &[BodyModeOption] = &[
     },
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResizeTarget {
+    History,
+    RequestHeight,
+    RequestMethod,
+    RequestUrl,
+    HeaderState,
+    HeaderBody,
+    BodyResponse,
+}
+
 pub fn draw(frame: &mut Frame<'_>, app: &App) {
     let area = frame.area();
-    let layout = app_layout(area);
+    let layout = app_layout(area, app);
 
     draw_header(frame, layout.header, app);
     draw_history(frame, layout.history, app);
@@ -765,8 +789,10 @@ fn draw_overlay(frame: &mut Frame<'_>, area: Rect, app: &App) {
     match app.overlay() {
         Some(Overlay::About) => draw_about(frame, area),
         Some(Overlay::FileMenu) => draw_file_menu(frame, area),
-        Some(Overlay::MethodMenu) => draw_method_menu(frame, area, app.request().method.as_str()),
-        Some(Overlay::BodyModeMenu) => draw_body_mode_menu(frame, area, app.body_mode()),
+        Some(Overlay::MethodMenu) => {
+            draw_method_menu(frame, area, app, app.request().method.as_str())
+        }
+        Some(Overlay::BodyModeMenu) => draw_body_mode_menu(frame, area, app, app.body_mode()),
         Some(Overlay::RenameHistory) => draw_rename_history(frame, area, app),
         Some(Overlay::Help) => draw_help(frame, area),
         Some(Overlay::ContextMenu) => draw_context_menu(frame, area, app),
@@ -874,8 +900,8 @@ fn draw_file_menu(frame: &mut Frame<'_>, area: Rect) {
     );
 }
 
-fn draw_method_menu(frame: &mut Frame<'_>, area: Rect, selected: &str) {
-    let rect = method_menu_rect(area);
+fn draw_method_menu(frame: &mut Frame<'_>, area: Rect, app: &App, selected: &str) {
+    let rect = method_menu_rect(area, app);
     let lines = METHOD_OPTIONS
         .iter()
         .map(|option| {
@@ -906,8 +932,8 @@ fn draw_method_menu(frame: &mut Frame<'_>, area: Rect, selected: &str) {
     );
 }
 
-fn draw_body_mode_menu(frame: &mut Frame<'_>, area: Rect, selected: BodyMode) {
-    let rect = body_mode_menu_rect(area);
+fn draw_body_mode_menu(frame: &mut Frame<'_>, area: Rect, app: &App, selected: BodyMode) {
+    let rect = body_mode_menu_rect(area, app);
     let lines = BODY_MODE_OPTIONS
         .iter()
         .map(|option| {
@@ -957,7 +983,7 @@ fn draw_rename_history(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn draw_help(frame: &mut Frame<'_>, area: Rect) {
-    let rect = centered_rect(area, 74, 18);
+    let rect = centered_rect(area, 78, 19);
     let lines = vec![
         Line::from(Span::styled(
             "Global",
@@ -982,6 +1008,7 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
         Line::from("Shared headers: edit rows in Project State / Shared Config"),
         Line::from("Body mode: click Mode dropdown inside Body"),
         Line::from("Response: click header toggle; h/Enter toggles headers; v bind, y copy"),
+        Line::from("Layout: drag workspace pane borders; Menu, Actions, Logs are fixed"),
         Line::from("Logs: c clear"),
         Line::from(""),
         Line::from("Esc closes this help pane."),
@@ -1032,8 +1059,8 @@ fn focused_block(title: &'static str, pane: FocusPane, app: &App) -> Block<'stat
         .border_style(border_style)
 }
 
-pub fn pane_at(area: Rect, column: u16, row: u16) -> Option<FocusPane> {
-    let layout = app_layout(area);
+pub fn pane_at(area: Rect, app: &App, column: u16, row: u16) -> Option<FocusPane> {
+    let layout = app_layout(area, app);
 
     for (pane, pane_area) in [
         (FocusPane::History, layout.history),
@@ -1055,7 +1082,7 @@ pub fn pane_at(area: Rect, column: u16, row: u16) -> Option<FocusPane> {
 }
 
 pub fn header_action_at(area: Rect, column: u16, row: u16) -> Option<HeaderAction> {
-    let header = header_layout(app_layout(area).header);
+    let header = header_layout(base_header_area(area));
 
     if contains(header.curler, column, row) {
         Some(HeaderAction::Curler)
@@ -1080,8 +1107,8 @@ pub fn file_menu_row_at(area: Rect, column: u16, row: u16) -> Option<usize> {
     Some(usize::from(row - content.y))
 }
 
-pub fn method_menu_row_at(area: Rect, column: u16, row: u16) -> Option<usize> {
-    let content = block_inner(method_menu_rect(area));
+pub fn method_menu_row_at(area: Rect, app: &App, column: u16, row: u16) -> Option<usize> {
+    let content = block_inner(method_menu_rect(area, app));
 
     if !contains(content, column, row) {
         return None;
@@ -1100,12 +1127,12 @@ pub fn method_for_menu_row(row_index: usize) -> Option<&'static str> {
     METHOD_OPTIONS.get(row_index).map(|option| option.method)
 }
 
-pub fn body_mode_control_at(area: Rect, column: u16, row: u16) -> bool {
-    contains(body_mode_control_rect(area), column, row)
+pub fn body_mode_control_at(area: Rect, app: &App, column: u16, row: u16) -> bool {
+    contains(body_mode_control_rect(area, app), column, row)
 }
 
-pub fn body_mode_menu_row_at(area: Rect, column: u16, row: u16) -> Option<usize> {
-    let content = block_inner(body_mode_menu_rect(area));
+pub fn body_mode_menu_row_at(area: Rect, app: &App, column: u16, row: u16) -> Option<usize> {
+    let content = block_inner(body_mode_menu_rect(area, app));
 
     if !contains(content, column, row) {
         return None;
@@ -1124,11 +1151,169 @@ pub fn body_mode_for_menu_row(row_index: usize) -> Option<BodyMode> {
     BODY_MODE_OPTIONS.get(row_index).map(|option| option.mode)
 }
 
+pub fn resize_target_at(area: Rect, app: &App, column: u16, row: u16) -> Option<ResizeTarget> {
+    let layout = app_layout(area, app);
+    let editor_right = layout.response.x.saturating_add(layout.response.width);
+    let middle_top = layout.history.y;
+    let middle_height = layout.history.height;
+
+    let targets = [
+        (
+            ResizeTarget::RequestMethod,
+            vertical_handle(layout.url.x, layout.method.y, layout.method.height),
+        ),
+        (
+            ResizeTarget::RequestUrl,
+            vertical_handle(layout.query.x, layout.url.y, layout.url.height),
+        ),
+        (
+            ResizeTarget::RequestHeight,
+            horizontal_handle(layout.headers.y, layout.method.x, editor_right),
+        ),
+        (
+            ResizeTarget::HeaderState,
+            vertical_handle(layout.state.x, layout.headers.y, layout.headers.height),
+        ),
+        (
+            ResizeTarget::HeaderBody,
+            horizontal_handle(layout.body.y, layout.method.x, editor_right),
+        ),
+        (
+            ResizeTarget::BodyResponse,
+            vertical_handle(layout.response.x, layout.body.y, layout.body.height),
+        ),
+        (
+            ResizeTarget::History,
+            vertical_handle(layout.method.x, middle_top, middle_height),
+        ),
+    ];
+
+    targets
+        .into_iter()
+        .find_map(|(target, handle)| contains(handle, column, row).then_some(target))
+}
+
+pub fn history_width_from_column(area: Rect, column: u16) -> u16 {
+    let middle = workspace_area(area);
+    let min_width = history_min_width(middle.width);
+    let max_width = middle.width.saturating_sub(MIN_EDITOR_WIDTH).max(min_width);
+
+    column
+        .saturating_sub(middle.x)
+        .saturating_add(1)
+        .clamp(min_width, max_width)
+}
+
+pub fn request_height_from_row(area: Rect, app: &App, row: u16) -> u16 {
+    let editor = editor_area(area, app);
+    let max_height = request_height_max(editor.height);
+
+    row.saturating_sub(editor.y)
+        .saturating_add(1)
+        .clamp(MIN_REQUEST_HEIGHT.min(max_height), max_height)
+}
+
+pub fn request_method_width_from_column(area: Rect, app: &App, column: u16) -> u16 {
+    let editor = editor_area(area, app);
+    let max_width = editor
+        .width
+        .saturating_sub(MIN_REQUEST_PANE_WIDTH.saturating_mul(2));
+
+    if max_width == 0 {
+        return editor.width;
+    }
+
+    column
+        .saturating_sub(editor.x)
+        .saturating_add(1)
+        .clamp(MIN_REQUEST_PANE_WIDTH.min(max_width), max_width)
+}
+
+pub fn request_url_width_from_column(area: Rect, app: &App, column: u16) -> u16 {
+    let layout = app_layout(area, app);
+    let remaining_width = layout.url.width.saturating_add(layout.query.width);
+    let max_width = remaining_width.saturating_sub(MIN_REQUEST_PANE_WIDTH);
+
+    if max_width == 0 {
+        return remaining_width;
+    }
+
+    column
+        .saturating_sub(layout.url.x)
+        .saturating_add(1)
+        .clamp(MIN_REQUEST_PANE_WIDTH.min(max_width), max_width)
+}
+
+pub fn editor_header_height_from_row(area: Rect, app: &App, row: u16) -> u16 {
+    let editor = editor_area(area, app);
+    let request_height = request_row_height(editor.height, app);
+    let start = editor.y.saturating_add(request_height);
+    let available = editor.height.saturating_sub(request_height);
+    let max_height = available.saturating_sub(DRAG_MIN_LOWER_EDITOR_HEIGHT);
+
+    if max_height == 0 {
+        return available;
+    }
+
+    row.saturating_sub(start)
+        .saturating_add(1)
+        .clamp(MIN_HEADER_STATE_HEIGHT.min(max_height), max_height)
+}
+
+pub fn editor_header_width_from_column(area: Rect, app: &App, column: u16) -> u16 {
+    let editor = editor_area(area, app);
+    let min_width = header_state_column_min_width(editor.width);
+    let max_width = editor.width.saturating_sub(min_width);
+
+    if max_width == 0 {
+        return editor.width;
+    }
+
+    column
+        .saturating_sub(editor.x)
+        .saturating_add(1)
+        .clamp(min_width, max_width)
+}
+
+pub fn body_width_from_column(area: Rect, app: &App, column: u16) -> u16 {
+    let layout = app_layout(area, app);
+    let total_width = layout.body.width.saturating_add(layout.response.width);
+    let min_width = lower_column_min_width(total_width);
+    let max_width = total_width.saturating_sub(min_width);
+
+    if max_width == 0 {
+        return total_width;
+    }
+
+    column
+        .saturating_sub(layout.body.x)
+        .saturating_add(1)
+        .clamp(min_width, max_width)
+}
+
+fn vertical_handle(x: u16, y: u16, height: u16) -> Rect {
+    Rect {
+        x: x.saturating_sub(1),
+        y,
+        width: 3,
+        height,
+    }
+}
+
+fn horizontal_handle(y: u16, x: u16, right: u16) -> Rect {
+    Rect {
+        x,
+        y: y.saturating_sub(1),
+        width: right.saturating_sub(x),
+        height: 2,
+    }
+}
+
 pub fn response_header_toggle_at(area: Rect, app: &App, column: u16, row: u16) -> bool {
     let Some(line_index) = response_header_toggle_line_index(app) else {
         return false;
     };
-    let content = block_inner(app_layout(area).response);
+    let content = block_inner(app_layout(area, app).response);
     if line_index >= content.height {
         return false;
     }
@@ -1189,7 +1374,7 @@ pub fn local_header_cell_at(
         .map(|header| (header.name.as_str(), header.value.as_str()))
         .collect::<Vec<_>>();
 
-    key_value_cell_at(app_layout(area).headers, 0, rows, column, row)
+    key_value_cell_at(app_layout(area, app).headers, 0, rows, column, row)
 }
 
 pub fn local_header_add_row_at(area: Rect, app: &App, column: u16, row: u16) -> bool {
@@ -1200,7 +1385,7 @@ pub fn local_header_add_row_at(area: Rect, app: &App, column: u16, row: u16) -> 
         .map(|header| (header.name.as_str(), header.value.as_str()))
         .collect::<Vec<_>>();
 
-    key_value_add_row_at(app_layout(area).headers, 0, rows, column, row)
+    key_value_add_row_at(app_layout(area, app).headers, 0, rows, column, row)
 }
 
 pub fn shared_header_cell_at(
@@ -1216,7 +1401,7 @@ pub fn shared_header_cell_at(
         .map(|header| (header.name.as_str(), header.value.as_str()))
         .collect::<Vec<_>>();
 
-    key_value_cell_at(app_layout(area).state, 1, rows, column, row)
+    key_value_cell_at(app_layout(area, app).state, 1, rows, column, row)
 }
 
 pub fn shared_header_add_row_at(area: Rect, app: &App, column: u16, row: u16) -> bool {
@@ -1227,7 +1412,7 @@ pub fn shared_header_add_row_at(area: Rect, app: &App, column: u16, row: u16) ->
         .map(|header| (header.name.as_str(), header.value.as_str()))
         .collect::<Vec<_>>();
 
-    key_value_add_row_at(app_layout(area).state, 1, rows, column, row)
+    key_value_add_row_at(app_layout(area, app).state, 1, rows, column, row)
 }
 
 pub fn body_field_cell_at(
@@ -1246,7 +1431,7 @@ pub fn body_field_cell_at(
         .map(|field| (field.key.as_str(), field.value.as_str()))
         .collect::<Vec<_>>();
 
-    key_value_cell_at(app_layout(area).body, 1, rows, column, row)
+    key_value_cell_at(app_layout(area, app).body, 1, rows, column, row)
 }
 
 pub fn body_field_add_row_at(area: Rect, app: &App, column: u16, row: u16) -> bool {
@@ -1260,11 +1445,11 @@ pub fn body_field_add_row_at(area: Rect, app: &App, column: u16, row: u16) -> bo
         .map(|field| (field.key.as_str(), field.value.as_str()))
         .collect::<Vec<_>>();
 
-    key_value_add_row_at(app_layout(area).body, 1, rows, column, row)
+    key_value_add_row_at(app_layout(area, app).body, 1, rows, column, row)
 }
 
-pub fn history_row_at(area: Rect, column: u16, row: u16) -> Option<usize> {
-    let content = block_inner(app_layout(area).history);
+pub fn history_row_at(area: Rect, app: &App, column: u16, row: u16) -> Option<usize> {
+    let content = block_inner(app_layout(area, app).history);
 
     if !contains(content, column, row) {
         return None;
@@ -1424,48 +1609,353 @@ fn header_layout(area: Rect) -> HeaderLayout {
     }
 }
 
-fn app_layout(area: Rect) -> AppLayout {
+fn app_layout(area: Rect, app: &App) -> AppLayout {
     let sections = Layout::vertical([
         Constraint::Length(6),
         Constraint::Min(10),
         Constraint::Length(4),
     ])
     .split(area);
-    let columns = Layout::horizontal([Constraint::Length(HISTORY_WIDTH), Constraint::Min(40)])
-        .split(sections[1]);
+    let history_width = history_width(sections[1].width, app);
+    let columns = [
+        Rect {
+            x: sections[1].x,
+            y: sections[1].y,
+            width: history_width,
+            height: sections[1].height,
+        },
+        Rect {
+            x: sections[1].x.saturating_add(history_width),
+            y: sections[1].y,
+            width: sections[1].width.saturating_sub(history_width),
+            height: sections[1].height,
+        },
+    ];
+    let editor_area = columns[1];
+    let request_height = request_row_height(editor_area.height, app);
+    let below_request_height = editor_area.height.saturating_sub(request_height);
+    let header_state_height =
+        editor_header_state_height(editor_area.width, below_request_height, app);
+    let lower_height = below_request_height.saturating_sub(header_state_height);
     let rows = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Length(7),
-        Constraint::Min(4),
+        Constraint::Length(request_height),
+        Constraint::Length(header_state_height),
+        Constraint::Length(lower_height),
     ])
-    .split(columns[1]);
-    let request_panes = Layout::horizontal([
-        Constraint::Length(24),
-        Constraint::Percentage(48),
-        Constraint::Percentage(52),
-    ])
-    .split(rows[0]);
-    let header_state =
-        Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)]).split(rows[1]);
-    let lower =
-        Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).split(rows[2]);
+    .split(editor_area);
+    let (method, url, query) = request_columns(rows[0], app);
+    let (headers, state) = header_state_columns(rows[1], app);
+    let (body, response) = lower_columns(rows[2], app);
 
     AppLayout {
         header: sections[0],
         history: columns[0],
-        method: request_panes[0],
-        url: request_panes[1],
-        query: request_panes[2],
-        headers: header_state[0],
-        state: header_state[1],
-        body: lower[0],
-        response: lower[1],
+        method,
+        url,
+        query,
+        headers,
+        state,
+        body,
+        response,
         logs: sections[2],
     }
 }
 
+fn history_width(total_width: u16, app: &App) -> u16 {
+    let min_width = history_min_width(total_width);
+    let max_width = total_width.saturating_sub(MIN_EDITOR_WIDTH).max(min_width);
+
+    app.history_width()
+        .unwrap_or(HISTORY_WIDTH)
+        .clamp(min_width, max_width)
+}
+
+fn history_min_width(total_width: u16) -> u16 {
+    if total_width >= MIN_HISTORY_WIDTH.saturating_add(MIN_EDITOR_WIDTH) {
+        MIN_HISTORY_WIDTH
+    } else {
+        total_width / 2
+    }
+}
+
+fn request_row_height(editor_height: u16, app: &App) -> u16 {
+    let max_height = request_height_max(editor_height);
+
+    app.request_height()
+        .unwrap_or(DEFAULT_REQUEST_HEIGHT)
+        .clamp(MIN_REQUEST_HEIGHT.min(max_height), max_height)
+}
+
+fn request_height_max(editor_height: u16) -> u16 {
+    let reserved = MIN_HEADER_STATE_HEIGHT.saturating_add(DRAG_MIN_LOWER_EDITOR_HEIGHT);
+    editor_height
+        .saturating_sub(reserved)
+        .max(MIN_REQUEST_HEIGHT)
+}
+
+fn request_columns(area: Rect, app: &App) -> (Rect, Rect, Rect) {
+    let method_width = request_method_width(area.width, app);
+    let remaining_width = area.width.saturating_sub(method_width);
+    let url_width = request_url_width(remaining_width, app);
+    let query_width = remaining_width.saturating_sub(url_width);
+
+    (
+        Rect {
+            x: area.x,
+            y: area.y,
+            width: method_width,
+            height: area.height,
+        },
+        Rect {
+            x: area.x.saturating_add(method_width),
+            y: area.y,
+            width: url_width,
+            height: area.height,
+        },
+        Rect {
+            x: area
+                .x
+                .saturating_add(method_width)
+                .saturating_add(url_width),
+            y: area.y,
+            width: query_width,
+            height: area.height,
+        },
+    )
+}
+
+fn request_method_width(total_width: u16, app: &App) -> u16 {
+    let max_width = total_width.saturating_sub(MIN_REQUEST_PANE_WIDTH.saturating_mul(2));
+
+    if max_width == 0 {
+        return total_width / 3;
+    }
+
+    app.request_method_width()
+        .unwrap_or(DEFAULT_METHOD_WIDTH)
+        .clamp(MIN_REQUEST_PANE_WIDTH.min(max_width), max_width)
+}
+
+fn request_url_width(remaining_width: u16, app: &App) -> u16 {
+    let max_width = remaining_width.saturating_sub(MIN_REQUEST_PANE_WIDTH);
+
+    if max_width == 0 {
+        return remaining_width / 2;
+    }
+
+    let default_width = remaining_width.saturating_mul(48) / 100;
+    app.request_url_width()
+        .unwrap_or(default_width)
+        .clamp(MIN_REQUEST_PANE_WIDTH.min(max_width), max_width)
+}
+
+fn editor_header_state_height(editor_width: u16, available_height: u16, app: &App) -> u16 {
+    if available_height == 0 {
+        return 0;
+    }
+
+    let min_lower = if app.editor_headers_height().is_some() {
+        DRAG_MIN_LOWER_EDITOR_HEIGHT
+    } else {
+        DEFAULT_MIN_LOWER_EDITOR_HEIGHT
+    };
+    let max_height = available_height.saturating_sub(min_lower);
+
+    if max_height == 0 {
+        return available_height;
+    }
+
+    if let Some(height) = app.editor_headers_height() {
+        return height.clamp(MIN_HEADER_STATE_HEIGHT.min(max_height), max_height);
+    }
+
+    let local_width = local_headers_width(editor_width, app);
+    let state_width = editor_width.saturating_sub(local_width);
+    let local_content_width = block_inner(Rect {
+        x: 0,
+        y: 0,
+        width: local_width,
+        height: 1,
+    })
+    .width;
+    let state_content_width = block_inner(Rect {
+        x: 0,
+        y: 0,
+        width: state_width,
+        height: 1,
+    })
+    .width;
+    let local_desired = local_headers_desired_height(app, local_content_width);
+    let state_desired = state_desired_height(app, state_content_width);
+    let desired = local_desired.max(state_desired);
+
+    desired.clamp(MIN_HEADER_STATE_HEIGHT.min(max_height), max_height)
+}
+
+fn local_headers_desired_height(app: &App, content_width: u16) -> u16 {
+    let rows = app
+        .request()
+        .headers
+        .iter()
+        .map(|header| (header.name.as_str(), header.value.as_str()))
+        .collect::<Vec<_>>();
+
+    key_value_total_height(rows, content_width)
+        .saturating_add(1)
+        .saturating_add(2)
+}
+
+fn state_desired_height(app: &App, content_width: u16) -> u16 {
+    let state = app.state();
+    let rows = state
+        .shared_headers
+        .iter()
+        .map(|header| (header.name.as_str(), header.value.as_str()))
+        .collect::<Vec<_>>();
+    let extra_rows = state
+        .cookies
+        .len()
+        .saturating_add(state.variables.len())
+        .saturating_add(state.response_bindings.len());
+
+    key_value_total_height(rows, content_width)
+        .saturating_add(1)
+        .saturating_add(1)
+        .saturating_add(1)
+        .saturating_add(extra_rows as u16)
+        .saturating_add(2)
+}
+
+fn key_value_total_height(rows: Vec<(&str, &str)>, content_width: u16) -> u16 {
+    let layout = key_value_layout(content_width);
+    let row_count = rows.len().max(1);
+    let mut height: u16 = 0;
+
+    for index in 0..row_count {
+        let key = rows.get(index).map_or("", |(key, _)| *key);
+        let value = rows.get(index).map_or("", |(_, value)| *value);
+        height = height.saturating_add(key_value_row_height(key, value, layout));
+    }
+
+    height
+}
+
+fn header_state_columns(area: Rect, app: &App) -> (Rect, Rect) {
+    let left_width = local_headers_width(area.width, app);
+    let right_width = area.width.saturating_sub(left_width);
+
+    (
+        Rect {
+            x: area.x,
+            y: area.y,
+            width: left_width,
+            height: area.height,
+        },
+        Rect {
+            x: area.x.saturating_add(left_width),
+            y: area.y,
+            width: right_width,
+            height: area.height,
+        },
+    )
+}
+
+fn lower_columns(area: Rect, app: &App) -> (Rect, Rect) {
+    let left_width = body_width(area.width, app);
+    let right_width = area.width.saturating_sub(left_width);
+
+    (
+        Rect {
+            x: area.x,
+            y: area.y,
+            width: left_width,
+            height: area.height,
+        },
+        Rect {
+            x: area.x.saturating_add(left_width),
+            y: area.y,
+            width: right_width,
+            height: area.height,
+        },
+    )
+}
+
+fn body_width(total_width: u16, app: &App) -> u16 {
+    let min_width = lower_column_min_width(total_width);
+    let max_width = total_width.saturating_sub(min_width);
+
+    if max_width == 0 {
+        return total_width;
+    }
+
+    let default_width = total_width.saturating_mul(DEFAULT_BODY_PERCENT) / 100;
+    app.body_width()
+        .unwrap_or(default_width)
+        .clamp(min_width, max_width)
+}
+
+fn lower_column_min_width(total_width: u16) -> u16 {
+    if total_width >= MIN_LOWER_COLUMN_WIDTH.saturating_mul(2) {
+        MIN_LOWER_COLUMN_WIDTH
+    } else {
+        total_width / 2
+    }
+}
+
+fn local_headers_width(total_width: u16, app: &App) -> u16 {
+    let min_width = header_state_column_min_width(total_width);
+    let max_width = total_width.saturating_sub(min_width);
+
+    if max_width == 0 {
+        return total_width;
+    }
+
+    let default_width = total_width.saturating_mul(DEFAULT_LOCAL_HEADERS_PERCENT) / 100;
+    app.editor_headers_width()
+        .unwrap_or(default_width)
+        .clamp(min_width, max_width)
+}
+
+fn header_state_column_min_width(total_width: u16) -> u16 {
+    if total_width >= MIN_HEADER_STATE_COLUMN_WIDTH.saturating_mul(2) {
+        MIN_HEADER_STATE_COLUMN_WIDTH
+    } else {
+        total_width / 2
+    }
+}
+
+fn base_header_area(area: Rect) -> Rect {
+    Layout::vertical([
+        Constraint::Length(6),
+        Constraint::Min(10),
+        Constraint::Length(4),
+    ])
+    .split(area)[0]
+}
+
+fn workspace_area(area: Rect) -> Rect {
+    Layout::vertical([
+        Constraint::Length(6),
+        Constraint::Min(10),
+        Constraint::Length(4),
+    ])
+    .split(area)[1]
+}
+
+fn editor_area(area: Rect, app: &App) -> Rect {
+    let workspace = workspace_area(area);
+    let history_width = history_width(workspace.width, app);
+
+    Rect {
+        x: workspace.x.saturating_add(history_width),
+        y: workspace.y,
+        width: workspace.width.saturating_sub(history_width),
+        height: workspace.height,
+    }
+}
+
 fn file_menu_rect(area: Rect) -> Rect {
-    let header = header_layout(app_layout(area).header);
+    let header = header_layout(base_header_area(area));
 
     bounded_rect(
         area,
@@ -1478,8 +1968,8 @@ fn file_menu_rect(area: Rect) -> Rect {
     )
 }
 
-fn method_menu_rect(area: Rect) -> Rect {
-    let method = app_layout(area).method;
+fn method_menu_rect(area: Rect, app: &App) -> Rect {
+    let method = app_layout(area, app).method;
 
     bounded_rect(
         area,
@@ -1492,8 +1982,8 @@ fn method_menu_rect(area: Rect) -> Rect {
     )
 }
 
-fn body_mode_control_rect(area: Rect) -> Rect {
-    let content = block_inner(app_layout(area).body);
+fn body_mode_control_rect(area: Rect, app: &App) -> Rect {
+    let content = block_inner(app_layout(area, app).body);
 
     Rect {
         x: content.x,
@@ -1503,8 +1993,8 @@ fn body_mode_control_rect(area: Rect) -> Rect {
     }
 }
 
-fn body_mode_menu_rect(area: Rect) -> Rect {
-    let control = body_mode_control_rect(area);
+fn body_mode_menu_rect(area: Rect, app: &App) -> Rect {
+    let control = body_mode_control_rect(area, app);
 
     bounded_rect(
         area,
@@ -1593,20 +2083,22 @@ mod tests {
     #[test]
     fn maps_mouse_position_to_history_row() {
         let area = Rect::new(0, 0, 80, 24);
+        let app = App::new();
 
-        assert_eq!(history_row_at(area, 1, 7), Some(0));
-        assert_eq!(history_row_at(area, 1, 8), Some(1));
-        assert_eq!(history_row_at(area, 0, 7), None);
-        assert_eq!(history_row_at(area, 1, 6), None);
+        assert_eq!(history_row_at(area, &app, 1, 7), Some(0));
+        assert_eq!(history_row_at(area, &app, 1, 8), Some(1));
+        assert_eq!(history_row_at(area, &app, 0, 7), None);
+        assert_eq!(history_row_at(area, &app, 1, 6), None);
     }
 
     #[test]
     fn maps_mouse_position_to_focus_pane() {
         let area = Rect::new(0, 0, 80, 24);
+        let app = App::new();
 
-        assert_eq!(pane_at(area, 1, 7), Some(FocusPane::History));
-        assert_eq!(pane_at(area, 37, 7), Some(FocusPane::Method));
-        assert_eq!(pane_at(area, 1, 20), Some(FocusPane::Logs));
+        assert_eq!(pane_at(area, &app, 1, 7), Some(FocusPane::History));
+        assert_eq!(pane_at(area, &app, 37, 7), Some(FocusPane::Method));
+        assert_eq!(pane_at(area, &app, 1, 20), Some(FocusPane::Logs));
     }
 
     #[test]
@@ -1631,9 +2123,10 @@ mod tests {
     #[test]
     fn maps_method_menu_rows_to_methods() {
         let area = Rect::new(0, 0, 80, 24);
+        let app = App::new();
 
-        assert_eq!(method_menu_row_at(area, 37, 10), Some(0));
-        assert_eq!(method_menu_row_at(area, 37, 11), Some(1));
+        assert_eq!(method_menu_row_at(area, &app, 37, 10), Some(0));
+        assert_eq!(method_menu_row_at(area, &app, 37, 11), Some(1));
         assert_eq!(method_for_menu_row(0), Some("GET"));
         assert_eq!(method_for_menu_row(4), Some("DELETE"));
         assert_eq!(method_for_menu_row(5), None);
@@ -1642,14 +2135,105 @@ mod tests {
     #[test]
     fn maps_body_mode_control_and_menu_rows() {
         let area = Rect::new(0, 0, 80, 24);
-        let control = body_mode_control_rect(area);
-        let menu = body_mode_menu_rect(area);
+        let app = App::new();
+        let control = body_mode_control_rect(area, &app);
+        let menu = body_mode_menu_rect(area, &app);
 
-        assert!(body_mode_control_at(area, control.x, control.y));
-        assert_eq!(body_mode_menu_row_at(area, menu.x + 1, menu.y + 1), Some(0));
+        assert!(body_mode_control_at(area, &app, control.x, control.y));
+        assert_eq!(
+            body_mode_menu_row_at(area, &app, menu.x + 1, menu.y + 1),
+            Some(0)
+        );
         assert_eq!(body_mode_for_menu_row(0), Some(BodyMode::Raw));
         assert_eq!(body_mode_for_menu_row(3), Some(BodyMode::Binary));
         assert_eq!(body_mode_for_menu_row(4), None);
+    }
+
+    #[test]
+    fn editor_header_row_grows_with_header_content() {
+        let area = Rect::new(0, 0, 120, 36);
+        let mut app = App::new();
+        let initial_height = app_layout(area, &app).headers.height;
+
+        app.add_local_header_row();
+        let expanded_height = app_layout(area, &app).headers.height;
+
+        assert!(expanded_height > initial_height);
+    }
+
+    #[test]
+    fn maps_editor_header_resize_handle_and_drag_height() {
+        let area = Rect::new(0, 0, 120, 36);
+        let mut app = App::new();
+        let layout = app_layout(area, &app);
+        let handle_y = layout.body.y.saturating_sub(1);
+
+        assert_eq!(
+            resize_target_at(area, &app, layout.method.x, handle_y),
+            Some(ResizeTarget::HeaderBody)
+        );
+
+        let dragged_height = editor_header_height_from_row(area, &app, handle_y.saturating_add(3));
+        app.set_editor_headers_height(dragged_height);
+
+        assert_eq!(app_layout(area, &app).headers.height, dragged_height);
+    }
+
+    #[test]
+    fn maps_editor_header_vertical_resize_handle_and_drag_width() {
+        let area = Rect::new(0, 0, 120, 36);
+        let mut app = App::new();
+        let layout = app_layout(area, &app);
+        let handle_x = layout.state.x;
+        let handle_y = layout.headers.y.saturating_add(1);
+
+        assert_eq!(
+            resize_target_at(area, &app, handle_x, handle_y),
+            Some(ResizeTarget::HeaderState)
+        );
+
+        let dragged_width = editor_header_width_from_column(area, &app, handle_x.saturating_add(5));
+        app.set_editor_headers_width(dragged_width);
+
+        assert_eq!(app_layout(area, &app).headers.width, dragged_width);
+    }
+
+    #[test]
+    fn maps_workspace_dividers_to_resize_targets() {
+        let area = Rect::new(0, 0, 120, 36);
+        let app = App::new();
+        let layout = app_layout(area, &app);
+
+        assert_eq!(
+            resize_target_at(area, &app, layout.method.x, layout.history.y + 1),
+            Some(ResizeTarget::History)
+        );
+        assert_eq!(
+            resize_target_at(area, &app, layout.url.x, layout.method.y + 1),
+            Some(ResizeTarget::RequestMethod)
+        );
+        assert_eq!(
+            resize_target_at(area, &app, layout.query.x, layout.url.y + 1),
+            Some(ResizeTarget::RequestUrl)
+        );
+        assert_eq!(
+            resize_target_at(area, &app, layout.headers.x, layout.headers.y),
+            Some(ResizeTarget::RequestHeight)
+        );
+        assert_eq!(
+            resize_target_at(area, &app, layout.state.x, layout.headers.y + 1),
+            Some(ResizeTarget::HeaderState)
+        );
+        assert_eq!(
+            resize_target_at(area, &app, layout.body.x, layout.body.y),
+            Some(ResizeTarget::HeaderBody)
+        );
+        assert_eq!(
+            resize_target_at(area, &app, layout.response.x, layout.body.y + 1),
+            Some(ResizeTarget::BodyResponse)
+        );
+        assert_eq!(resize_target_at(area, &app, 1, 1), None);
+        assert_eq!(resize_target_at(area, &app, 1, layout.logs.y), None);
     }
 
     #[test]
@@ -1657,7 +2241,7 @@ mod tests {
         let area = Rect::new(0, 0, 80, 24);
         let mut app = App::new();
         app.select_body_mode_option(BodyMode::UrlEncoded);
-        let layout = app_layout(area);
+        let layout = app_layout(area, &app);
         let header = block_inner(layout.headers);
         let state = block_inner(layout.state);
         let body = block_inner(layout.body);
@@ -1690,7 +2274,7 @@ mod tests {
         app.activate_context_menu_row(1);
         app.select_body_mode_option(BodyMode::UrlEncoded);
 
-        let layout = app_layout(area);
+        let layout = app_layout(area, &app);
         let header = block_inner(layout.headers);
         let state = block_inner(layout.state);
         let body = block_inner(layout.body);
@@ -1727,7 +2311,7 @@ mod tests {
             truncated: false,
         });
 
-        let response = block_inner(app_layout(area).response);
+        let response = block_inner(app_layout(area, &app).response);
 
         assert!(response_header_toggle_at(
             area,
