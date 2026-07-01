@@ -74,20 +74,19 @@ curler -v
 
 ## Install
 
-Build an optimized executable:
+Install with the repository script:
 
 ```sh
-cargo build --release
+scripts/install.sh
 ```
 
-Install it into Curler's local bin directory:
+The script builds an optimized executable and installs it to `/usr/local/bin/curler` by default, using `sudo` only when the install directory is not writable. Override the destination with `INSTALL_DIR`:
 
 ```sh
-mkdir -p "$HOME/.curler/bin"
-install -m 755 target/release/curler "$HOME/.curler/bin/curler"
+INSTALL_DIR="$HOME/.curler/bin" scripts/install.sh
 ```
 
-Add Curler to your Bash `PATH` by appending this to `~/.bashrc`:
+If you install into `"$HOME/.curler/bin"`, add Curler to your Bash `PATH` by appending this to `~/.bashrc`:
 
 ```sh
 # curler
@@ -189,6 +188,8 @@ src/
   net/                 HTTP backend adapters
   storage/             Project discovery and filesystem path ownership
   ui/                  Ratatui rendering with RustUI palette roles, layout hit-testing, and reusable widgets
+scripts/
+  install.sh           Build and install the release binary
 ```
 
 Folder responsibilities:
@@ -198,6 +199,7 @@ Folder responsibilities:
 - `net/`: owns network execution details. The current backend is `ureq`; future `tokio`/`reqwest` work should stay behind this boundary.
 - `storage/`: owns filesystem/project discovery such as `~/.curler/projects/histories/`.
 - `ui/`: owns RustUI palette-backed Ratatui drawing and mouse hit-testing. Shared UI controls should go into focused widget modules such as `ui/key_value.rs`.
+- `scripts/`: owns developer and release helper scripts such as `scripts/install.sh`.
 - `cli.rs`: owns flags that Curler handles before starting the TUI. Request/curl-compatible arguments should continue into `App::load`.
 - `main.rs`: wires CLI, terminal setup/cleanup, the event loop, and top-level mouse/keyboard dispatch.
 

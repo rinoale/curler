@@ -13,6 +13,7 @@ src/
   net/                 Network execution adapters
   storage/             Project discovery and filesystem path decisions
   ui/                  Ratatui rendering, layout hit-testing, reusable widgets
+scripts/              Developer and release helper scripts
 ```
 
 ## Placement Rules
@@ -24,6 +25,7 @@ src/
 - Put HTTP execution details in `src/net/`. Do not call a network library directly from `app/`, `ui/`, or `domain/`.
 - Put Ratatui drawing, layout rectangles, mouse hit-testing, overlays, and reusable TUI widgets in `src/ui/`.
 - Put reusable TUI controls in their own file under `src/ui/`, such as `src/ui/key_value.rs`.
+- Put developer and release helper scripts in `scripts/`. Scripts should detect the repository root from their own path and avoid storing runtime project data.
 - Put CLI-only flags in `src/cli.rs`. Do not parse request/curl-compatible options there unless they are Curler-level flags that should exit before TUI startup.
 - Keep `src/main.rs` as wiring: CLI dispatch, terminal setup/cleanup, event loop, and top-level event routing.
 
