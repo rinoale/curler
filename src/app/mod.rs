@@ -1,6 +1,12 @@
 use std::{collections::BTreeSet, io, sync::mpsc, thread};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+#[cfg(test)]
+use crossterm::event::KeyModifiers;
+use crossterm::event::{KeyCode, KeyEvent};
+
+mod keymap;
+
+use keymap::{Keymap, text_input_modifiers};
 
 use crate::{
     domain::{
@@ -24,6 +30,7 @@ pub struct App {
     headers_input: String,
     body_input: String,
     focus: FocusPane,
+    keymap: Keymap,
     expanded_hosts: BTreeSet<String>,
     expanded_routes: BTreeSet<String>,
     selected_history_id: Option<String>,
@@ -138,7 +145,7 @@ enum Direction {
     Right,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Action {
     Quit,
     RunRequest,
@@ -215,6 +222,7 @@ impl App {
             headers_input,
             body_input,
             focus: FocusPane::History,
+            keymap: Keymap::default(),
             expanded_hosts: BTreeSet::new(),
             expanded_routes: BTreeSet::new(),
             selected_history_id: None,
@@ -298,6 +306,7 @@ impl App {
             headers_input,
             body_input,
             focus: FocusPane::History,
+            keymap: Keymap::default(),
             expanded_hosts: BTreeSet::new(),
             expanded_routes: BTreeSet::new(),
             selected_history_id,
@@ -1011,7 +1020,7 @@ impl App {
             return;
         }
 
-        if let Some(action) = global_action(key) {
+        if let Some(action) = self.keymap.global_action(key) {
             self.dispatch(action);
             return;
         }
@@ -1020,7 +1029,7 @@ impl App {
             return;
         }
 
-        if let Some(action) = self.local_action(key) {
+        if let Some(action) = self.keymap.local_action(self.focus, key) {
             self.dispatch(action);
         }
     }
@@ -1360,50 +1369,6 @@ impl App {
         self.request.body.clone_from(&self.body_input);
 
         Ok(())
-    }
-
-    fn local_action(&self, key: KeyEvent) -> Option<Action> {
-        if !key.modifiers.is_empty() {
-            return None;
-        }
-
-        match self.focus {
-            FocusPane::History => match key.code {
-                KeyCode::Char('k') | KeyCode::Up => Some(Action::HistoryUp),
-                KeyCode::Char('j') | KeyCode::Down => Some(Action::HistoryDown),
-                KeyCode::Enter | KeyCode::Char(' ') => Some(Action::ActivateHistory),
-                KeyCode::Char('a') => Some(Action::AddLocal),
-                KeyCode::Char('d') => Some(Action::DeleteLocal),
-                KeyCode::Char('r') => Some(Action::RenameLocal),
-                _ => None,
-            },
-            FocusPane::Method => match key.code {
-                KeyCode::Enter | KeyCode::Char(' ') => Some(Action::OpenMethodMenu),
-                KeyCode::Char('1') | KeyCode::Char('g') => Some(Action::SelectMethod("GET")),
-                KeyCode::Char('2') | KeyCode::Char('p') => Some(Action::SelectMethod("POST")),
-                KeyCode::Char('3') | KeyCode::Char('u') => Some(Action::SelectMethod("PUT")),
-                KeyCode::Char('4') => Some(Action::SelectMethod("PATCH")),
-                KeyCode::Char('5') | KeyCode::Char('x') => Some(Action::SelectMethod("DELETE")),
-                _ => None,
-            },
-            FocusPane::Url
-            | FocusPane::Query
-            | FocusPane::Headers
-            | FocusPane::State
-            | FocusPane::Body => None,
-            FocusPane::Response => match key.code {
-                KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('h') => {
-                    Some(Action::ToggleResponseHeaders)
-                }
-                KeyCode::Char('v') => Some(Action::AddLocal),
-                KeyCode::Char('y') => Some(Action::EditLocal),
-                _ => None,
-            },
-            FocusPane::Logs => match key.code {
-                KeyCode::Char('c') => Some(Action::ClearLogs),
-                _ => None,
-            },
-        }
     }
 
     fn move_focus(&mut self, direction: Direction) {
@@ -1887,43 +1852,8 @@ fn accepts_newline(focus: FocusPane) -> bool {
     matches!(focus, FocusPane::Headers | FocusPane::Body)
 }
 
-fn text_input_modifiers(mut modifiers: KeyModifiers) -> bool {
-    modifiers.remove(KeyModifiers::SHIFT);
-    modifiers.is_empty()
-}
-
 fn route_key(origin: &str, method: &str, path: &str) -> String {
     format!("{origin}\t{method}\t{path}")
-}
-
-fn global_action(key: KeyEvent) -> Option<Action> {
-    match key.code {
-        KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => Some(Action::Quit),
-        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            Some(Action::RunRequest)
-        }
-        KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            Some(Action::SaveRequest)
-        }
-        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            Some(Action::OpenCommandPalette)
-        }
-        KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            Some(Action::MoveFocus(Direction::Left))
-        }
-        KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            Some(Action::MoveFocus(Direction::Down))
-        }
-        KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            Some(Action::MoveFocus(Direction::Up))
-        }
-        KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            Some(Action::MoveFocus(Direction::Right))
-        }
-        KeyCode::Tab => Some(Action::MoveFocus(Direction::Right)),
-        KeyCode::BackTab => Some(Action::MoveFocus(Direction::Left)),
-        _ => None,
-    }
 }
 
 #[cfg(not(test))]

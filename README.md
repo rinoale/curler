@@ -5,8 +5,9 @@
 ## Stack
 
 - Language: Rust 2024
-- Terminal UI: Ratatui
+- Terminal UI: Ratatui rendered through RustUI shared keymap/style primitives
 - Terminal backend: Crossterm
+- Shared TUI framework: rustui from `https://github.com/rinoale/rustui.git`
 - HTTP client: ureq with rustls TLS
 - Storage: JSON files under the current project's Curler history directory
 
@@ -15,6 +16,7 @@
 - Standalone Rust binary crate.
 - Terminal setup and cleanup with raw mode, alternate screen, and mouse support.
 - Keyboard and mouse event loop.
+- RustUI-backed unified keymap for global and pane-local shortcuts.
 - Vim-style focus movement with `Ctrl-H/J/K/L`, plus `Tab` and `Shift-Tab`.
 - Project-scoped history under `~/.curler/projects/histories/`.
 - Curl-like command-line import.
@@ -182,20 +184,20 @@ Curler keeps domain logic, app state, adapters, and TUI code in separate modules
 src/
   main.rs              Binary entrypoint, terminal setup, event loop
   cli.rs               Curler-level CLI flags such as --help and --version
-  app/                 TUI application state machine and user actions
+  app/                 TUI application state machine, RustUI keymap, and user actions
   domain/              HTTP request/history/state models and pure logic
   net/                 HTTP backend adapters
   storage/             Project discovery and filesystem path ownership
-  ui/                  Ratatui rendering, layout hit-testing, and reusable widgets
+  ui/                  Ratatui rendering with RustUI palette roles, layout hit-testing, and reusable widgets
 ```
 
 Folder responsibilities:
 
-- `app/`: owns `App`, focus, overlays, request editing, history selection, run state, and dispatch behavior.
+- `app/`: owns `App`, the RustUI key-to-action map, focus, overlays, request editing, history selection, run state, and dispatch behavior.
 - `domain/`: owns durable concepts: `RequestDraft`, body modes, headers/cookies, project history, shared state, variables, and response bindings.
 - `net/`: owns network execution details. The current backend is `ureq`; future `tokio`/`reqwest` work should stay behind this boundary.
 - `storage/`: owns filesystem/project discovery such as `~/.curler/projects/histories/`.
-- `ui/`: owns Ratatui drawing and mouse hit-testing. Shared UI controls should go into focused widget modules such as `ui/key_value.rs`.
+- `ui/`: owns RustUI palette-backed Ratatui drawing and mouse hit-testing. Shared UI controls should go into focused widget modules such as `ui/key_value.rs`.
 - `cli.rs`: owns flags that Curler handles before starting the TUI. Request/curl-compatible arguments should continue into `App::load`.
 - `main.rs`: wires CLI, terminal setup/cleanup, the event loop, and top-level mouse/keyboard dispatch.
 

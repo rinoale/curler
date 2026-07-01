@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
@@ -12,12 +12,14 @@ use crate::{
 };
 
 mod key_value;
+mod theme;
 
 use key_value::{
     add_row_at as key_value_add_row_at, cell_at as key_value_cell_at,
     lines_from_owned_value as key_value_lines_from_owned_value,
     total_height as key_value_total_height,
 };
+use theme::{UiRole, bold, selected, style as ui_style, underline};
 
 const HISTORY_WIDTH: u16 = 36;
 const MIN_HISTORY_WIDTH: u16 = 18;
@@ -113,13 +115,8 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
         header.menu_bar,
     );
     frame.render_widget(
-        Paragraph::new(Line::from(vec![Span::styled(
-            "Run",
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        )]))
-        .block(Block::default().title("Actions").borders(Borders::ALL)),
+        Paragraph::new(Line::from(vec![Span::styled("Run", bold(UiRole::Success))]))
+            .block(Block::default().title("Actions").borders(Borders::ALL)),
         header.action_bar,
     );
 }
@@ -136,11 +133,9 @@ fn menu_line(app: &App) -> Line<'static> {
 
 fn menu_span(label: &'static str, active: bool) -> Span<'static> {
     let style = if active {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
+        bold(UiRole::Warning)
     } else {
-        Style::default().fg(Color::White)
+        ui_style(UiRole::Text)
     };
 
     Span::styled(label, style)
@@ -157,14 +152,14 @@ fn draw_history(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(
         List::new(items)
             .block(focused_block("History", FocusPane::History, app))
-            .style(Style::default().fg(Color::White)),
+            .style(ui_style(UiRole::Text)),
         area,
     );
 }
 
 fn history_row_item((index, row): (usize, HistoryRow), app: &App) -> ListItem<'static> {
     let row_style = if app.focus() == FocusPane::History && app.history_cursor() == index {
-        Style::default().bg(Color::DarkGray)
+        selected()
     } else {
         Style::default()
     };
@@ -173,13 +168,8 @@ fn history_row_item((index, row): (usize, HistoryRow), app: &App) -> ListItem<'s
         HistoryRow::Host { origin, expanded } => {
             let marker = if expanded { "[-] " } else { "[+] " };
             ListItem::new(Line::from(vec![
-                Span::styled(marker, Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    origin,
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
+                Span::styled(marker, ui_style(UiRole::Muted)),
+                Span::styled(origin, bold(UiRole::Accent)),
             ]))
             .style(row_style)
         }
@@ -192,13 +182,8 @@ fn history_row_item((index, row): (usize, HistoryRow), app: &App) -> ListItem<'s
             let marker = if expanded { "[-] " } else { "[+] " };
             ListItem::new(Line::from(vec![
                 Span::raw("  "),
-                Span::styled(marker, Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    method,
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                ),
+                Span::styled(marker, ui_style(UiRole::Muted)),
+                Span::styled(method, bold(UiRole::Success)),
                 Span::raw(" "),
                 Span::raw(display_path),
             ]))
@@ -212,27 +197,22 @@ fn history_row_item((index, row): (usize, HistoryRow), app: &App) -> ListItem<'s
         } => {
             let marker = if selected { "> " } else { "  " };
             let style = if selected {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
+                bold(UiRole::Warning)
             } else {
-                Style::default().fg(Color::Gray)
+                ui_style(UiRole::Muted)
             };
 
             ListItem::new(Line::from(vec![
                 Span::raw("    "),
-                Span::styled(marker, Style::default().fg(Color::DarkGray)),
+                Span::styled(marker, ui_style(UiRole::Muted)),
                 Span::styled(label, style),
-                Span::styled(
-                    format!(" x{run_count}"),
-                    Style::default().fg(Color::DarkGray),
-                ),
+                Span::styled(format!(" x{run_count}"), ui_style(UiRole::Muted)),
             ]))
             .style(row_style)
         }
         HistoryRow::Empty => ListItem::new(Line::from(Span::styled(
             "No history yet",
-            Style::default().fg(Color::DarkGray),
+            ui_style(UiRole::Muted),
         )))
         .style(row_style),
     }
@@ -273,12 +253,7 @@ fn draw_request_editor(frame: &mut Frame<'_>, layout: AppLayout, app: &App) {
 
 fn method_dropdown_label(method: &str) -> Line<'static> {
     Line::from(vec![
-        Span::styled(
-            method.to_string(),
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(method.to_string(), bold(UiRole::Success)),
         Span::raw("  [v]"),
     ])
 }
@@ -311,9 +286,7 @@ fn draw_state(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let state = app.state();
     let mut lines = vec![Line::from(Span::styled(
         "Shared Headers",
-        Style::default()
-            .fg(Color::Green)
-            .add_modifier(Modifier::BOLD),
+        bold(UiRole::Success),
     ))];
 
     let shared_header_rows = state
@@ -334,7 +307,7 @@ fn draw_state(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
     for cookie in &state.cookies {
         lines.push(Line::from(vec![
-            Span::styled("Cookie ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Cookie ", ui_style(UiRole::Muted)),
             Span::raw(cookie.name.clone()),
             Span::raw("="),
             Span::raw(cookie.value.clone()),
@@ -348,7 +321,7 @@ fn draw_state(frame: &mut Frame<'_>, area: Rect, app: &App) {
             value.clone()
         };
         lines.push(Line::from(vec![
-            Span::styled("Var ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Var ", ui_style(UiRole::Muted)),
             Span::raw(name.clone()),
             Span::raw(" = "),
             Span::raw(value),
@@ -357,7 +330,7 @@ fn draw_state(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
     for binding in &state.response_bindings {
         lines.push(Line::from(vec![
-            Span::styled("Bind ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Bind ", ui_style(UiRole::Muted)),
             Span::raw(binding.variable.clone()),
             Span::raw(" <- "),
             Span::raw(binding.json_path.clone()),
@@ -384,7 +357,7 @@ fn draw_logs(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .take(3)
         .map(|log| {
             Line::from(vec![
-                Span::styled("> ", Style::default().fg(Color::Yellow)),
+                Span::styled("> ", ui_style(UiRole::Warning)),
                 Span::raw(log.clone()),
             ])
         })
@@ -394,7 +367,7 @@ fn draw_logs(frame: &mut Frame<'_>, area: Rect, app: &App) {
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
             "<no logs>",
-            Style::default().fg(Color::DarkGray),
+            ui_style(UiRole::Muted),
         )));
     }
 
@@ -409,9 +382,9 @@ fn draw_logs(frame: &mut Frame<'_>, area: Rect, app: &App) {
 fn draw_response(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let lines = response_lines(app);
     let style = if app.response().is_some() {
-        Style::default().fg(Color::White)
+        ui_style(UiRole::Text)
     } else {
-        Style::default().fg(Color::DarkGray)
+        ui_style(UiRole::Muted)
     };
 
     frame.render_widget(
@@ -427,18 +400,13 @@ fn response_lines(app: &App) -> Vec<Line<'static>> {
     if let Some(run) = app.active_run() {
         return vec![
             Line::from(vec![
-                Span::styled("Running ", Style::default().fg(Color::Yellow)),
-                Span::styled(
-                    run.summary.clone(),
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
+                Span::styled("Running ", ui_style(UiRole::Warning)),
+                Span::styled(run.summary.clone(), bold(UiRole::Warning)),
             ]),
             Line::from(""),
             Line::from(Span::styled(
                 "The UI remains usable while the request runs.",
-                Style::default().fg(Color::DarkGray),
+                ui_style(UiRole::Muted),
             )),
         ];
     }
@@ -448,19 +416,15 @@ fn response_lines(app: &App) -> Vec<Line<'static>> {
     };
 
     let status_style = if (200..300).contains(&response.status) {
-        Style::default()
-            .fg(Color::Green)
-            .add_modifier(Modifier::BOLD)
+        bold(UiRole::Success)
     } else if response.status >= 400 {
-        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+        bold(UiRole::Danger)
     } else {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
+        bold(UiRole::Warning)
     };
     let mut lines = vec![
         Line::from(vec![
-            Span::styled("HTTP ", Style::default().fg(Color::DarkGray)),
+            Span::styled("HTTP ", ui_style(UiRole::Muted)),
             Span::styled(
                 format!("{} {}", response.status, response.status_text),
                 status_style,
@@ -477,10 +441,7 @@ fn response_lines(app: &App) -> Vec<Line<'static>> {
 
     for header in response.headers.iter().take(shown_headers) {
         lines.push(Line::from(vec![
-            Span::styled(
-                format!("{}: ", header.name),
-                Style::default().fg(Color::Cyan),
-            ),
+            Span::styled(format!("{}: ", header.name), ui_style(UiRole::Accent)),
             Span::raw(header.value.clone()),
         ]));
     }
@@ -494,12 +455,7 @@ fn response_lines(app: &App) -> Vec<Line<'static>> {
                 response.headers.len() - RESPONSE_HEADER_PREVIEW_LIMIT
             )
         };
-        lines.push(Line::from(Span::styled(
-            label,
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::UNDERLINED),
-        )));
+        lines.push(Line::from(Span::styled(label, underline(UiRole::Warning))));
     }
 
     if !response.headers.is_empty() {
@@ -509,7 +465,7 @@ fn response_lines(app: &App) -> Vec<Line<'static>> {
     let body_lines = if response.body.is_empty() {
         vec![Line::from(Span::styled(
             "<empty body>",
-            Style::default().fg(Color::DarkGray),
+            ui_style(UiRole::Muted),
         ))]
     } else {
         response
@@ -525,7 +481,7 @@ fn response_lines(app: &App) -> Vec<Line<'static>> {
     if response.truncated {
         lines.push(Line::from(Span::styled(
             "... response body truncated",
-            Style::default().fg(Color::DarkGray),
+            ui_style(UiRole::Muted),
         )));
     }
 
@@ -562,13 +518,8 @@ fn draw_body(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn body_mode_label(mode: BodyMode) -> Line<'static> {
     Line::from(vec![
-        Span::styled("Mode ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            mode.label(),
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled("Mode ", ui_style(UiRole::Muted)),
+        Span::styled(mode.label(), bold(UiRole::Success)),
         Span::raw("  [v]"),
     ])
 }
@@ -610,12 +561,7 @@ fn draw_about(frame: &mut Frame<'_>, area: Rect) {
         .filter(|authors| !authors.is_empty())
         .unwrap_or("curler contributors");
     let lines = vec![
-        Line::from(Span::styled(
-            "Curler",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )),
+        Line::from(Span::styled("Curler", bold(UiRole::Accent))),
         Line::from("Terminal HTTP client"),
         Line::from(""),
         Line::from(format!("Version: {}", env!("CARGO_PKG_VERSION"))),
@@ -636,7 +582,7 @@ fn draw_about(frame: &mut Frame<'_>, area: Rect) {
 fn draw_file_menu(frame: &mut Frame<'_>, area: Rect) {
     let rect = file_menu_rect(area);
     let lines = vec![Line::from(vec![
-        Span::styled("Save", Style::default().fg(Color::Yellow)),
+        Span::styled("Save", ui_style(UiRole::Warning)),
         Span::raw("   ^S"),
     ])];
 
@@ -658,15 +604,13 @@ fn draw_method_menu(frame: &mut Frame<'_>, area: Rect, app: &App, selected: &str
                 "  "
             };
             let style = if option.method == selected {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
+                bold(UiRole::Warning)
             } else {
-                Style::default().fg(Color::White)
+                ui_style(UiRole::Text)
             };
 
             Line::from(vec![
-                Span::styled(marker, Style::default().fg(Color::DarkGray)),
+                Span::styled(marker, ui_style(UiRole::Muted)),
                 Span::styled(option.method.to_string(), style),
             ])
         })
@@ -686,15 +630,13 @@ fn draw_body_mode_menu(frame: &mut Frame<'_>, area: Rect, app: &App, selected: B
         .map(|option| {
             let marker = if option.mode == selected { "> " } else { "  " };
             let style = if option.mode == selected {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
+                bold(UiRole::Warning)
             } else {
-                Style::default().fg(Color::White)
+                ui_style(UiRole::Text)
             };
 
             Line::from(vec![
-                Span::styled(marker, Style::default().fg(Color::DarkGray)),
+                Span::styled(marker, ui_style(UiRole::Muted)),
                 Span::styled(option.mode.label().to_string(), style),
             ])
         })
@@ -732,21 +674,11 @@ fn draw_rename_history(frame: &mut Frame<'_>, area: Rect, app: &App) {
 fn draw_help(frame: &mut Frame<'_>, area: Rect) {
     let rect = centered_rect(area, 78, 19);
     let lines = vec![
-        Line::from(Span::styled(
-            "Global",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )),
+        Line::from(Span::styled("Global", bold(UiRole::Accent))),
         Line::from("^Q quit   ^R run   ^S save   ^P command palette"),
         Line::from("^H/^J/^K/^L move focus   Tab/Shift-Tab move focus"),
         Line::from(""),
-        Line::from(Span::styled(
-            "Local",
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        )),
+        Line::from(Span::styled("Local", bold(UiRole::Success))),
         Line::from("History: j/k move, Enter or Space expand/select, a add, d delete, r rename"),
         Line::from("Method: Enter/Space opens dropdown, click option; 1-5 selects"),
         Line::from("Host/Path and Query: plain text input"),
@@ -795,9 +727,9 @@ fn focused_block(title: &'static str, pane: FocusPane, app: &App) -> Block<'stat
         title.to_string()
     };
     let border_style = if app.focus() == pane {
-        Style::default().fg(Color::Yellow)
+        ui_style(UiRole::FocusedBorder)
     } else {
-        Style::default().fg(Color::DarkGray)
+        ui_style(UiRole::Border)
     };
 
     Block::default()

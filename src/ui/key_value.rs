@@ -1,10 +1,12 @@
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::Style,
     text::{Line, Span},
 };
 
 use crate::app::KeyValueColumn;
+
+use super::theme::{UiRole, bold, style as ui_style};
 
 const CELL_GAP: u16 = 1;
 const MIN_KEY_CELL_WIDTH: u16 = 12;
@@ -52,12 +54,7 @@ pub(super) fn lines_from_owned_value(
         ));
     }
 
-    lines.push(Line::from(Span::styled(
-        add_label,
-        Style::default()
-            .fg(Color::Green)
-            .add_modifier(Modifier::BOLD),
-    )));
+    lines.push(Line::from(Span::styled(add_label, bold(UiRole::Success))));
 
     lines
 }
@@ -120,16 +117,14 @@ fn row_lines(
 }
 
 fn active_cell_style() -> Style {
-    Style::default()
-        .fg(Color::Yellow)
-        .add_modifier(Modifier::BOLD)
+    bold(UiRole::Warning)
 }
 
 fn cell_border_style(active: bool) -> Style {
     if active {
-        Style::default().fg(Color::Yellow)
+        ui_style(UiRole::FocusedBorder)
     } else {
-        Style::default().fg(Color::DarkGray)
+        ui_style(UiRole::Border)
     }
 }
 
