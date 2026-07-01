@@ -16,8 +16,8 @@
 - Standalone Rust binary crate.
 - Terminal setup and cleanup with raw mode, alternate screen, and mouse support.
 - Keyboard and mouse event loop.
-- RustUI-backed unified keymap for global and pane-local shortcuts.
-- Vim-style focus movement with `Ctrl-H/J/K/L`, plus `Tab` and `Shift-Tab`.
+- RustUI-backed single shared keymap for command, help, focus, submit, and navigation intents.
+- Shared RustUI keymap for command, help, cancel, focus, submit, and previous/next navigation.
 - Project-scoped history under `~/.curler/projects/histories/`.
 - Curl-like command-line import.
 - History tree grouped by host, method, and path.
@@ -109,7 +109,7 @@ curler
 
 1. Start `curler`.
 2. Select or edit the host/path, query, headers, body, and method.
-3. Press `Ctrl-R` or click `Run`.
+3. Press `F5` or click `Run`.
 4. Curler saves the request to history and executes it in a background worker.
 5. Inspect status, headers, and body in the Response pane.
 6. Click `[+] N more headers` to expand response headers.
@@ -117,15 +117,17 @@ curler
 
 ## Shortcuts
 
-- `Ctrl-Q`: quit
-- `Ctrl-R`: run current request
-- `Ctrl-S`: save current request without running
-- `Ctrl-P`: command palette placeholder
-- `Ctrl-H/J/K/L`: move focus left/down/up/right
-- `Tab` / `Shift-Tab`: move focus
-- History pane: `j/k` move, `Enter` or Space expand/select, `a` add placeholder, `d` delete, `r` rename
-- Method pane: `Enter` or Space opens dropdown, `1-5` selects method
-- Response pane: `h`, `Enter`, or Space toggles response headers
+- `:`: command mode placeholder
+- `?`: help
+- `Esc`: cancel/close overlays
+- `F2`: mode
+- `F5`: refresh/run current request
+- `Tab` / `Shift-Tab`: focus
+- `Enter`: submit/open the focused item
+- `Up` / `Down`: previous/next
+- History pane: `Up` / `Down` move, `Enter` expands/selects
+- Method pane: `Enter` opens dropdown, click option to select
+- Response pane: `Enter` toggles response headers
 
 ## Mouse
 

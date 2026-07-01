@@ -1,17 +1,26 @@
 use crossterm::event::{KeyEvent, KeyModifiers};
-use rustui::keymap::{Key, KeyBinding as FrameworkKeyBinding, Keymap as FrameworkKeymap, binding};
+use rustui::keymap::{KeyBinding as FrameworkKeyBinding, Keymap as FrameworkKeymap, binding};
 
-use super::{Action, Direction, FocusPane};
+pub(super) use rustui::keymap::{Key, text_input_modifiers};
 
-pub(super) use rustui::keymap::text_input_modifiers;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Intent {
+    EnterCommandMode,
+    Cancel,
+    Help,
+    ToggleSafeMode,
+    RefreshMetadata,
+    ToggleFocus,
+    Submit,
+    Previous,
+    Next,
+}
+
+pub(super) type KeyBinding = FrameworkKeyBinding<Intent>;
 
 #[derive(Debug, Clone)]
 pub(super) struct Keymap {
-    global: FrameworkKeymap<Action>,
-    history: FrameworkKeymap<Action>,
-    method: FrameworkKeymap<Action>,
-    response: FrameworkKeymap<Action>,
-    logs: FrameworkKeymap<Action>,
+    inner: FrameworkKeymap<Intent>,
 }
 
 impl Default for Keymap {
@@ -22,277 +31,122 @@ impl Default for Keymap {
 
 impl Keymap {
     fn curler() -> Self {
+        let none = KeyModifiers::NONE;
+
         Self {
-            global: FrameworkKeymap::new([
-                ctrl('q', Action::Quit, "^Q", "Quit Curler"),
-                ctrl('r', Action::RunRequest, "^R", "Run current request"),
-                ctrl('s', Action::SaveRequest, "^S", "Save current request"),
-                ctrl(
-                    'p',
-                    Action::OpenCommandPalette,
-                    "^P",
-                    "Open command palette",
+            inner: FrameworkKeymap::new(vec![
+                binding(
+                    Key::Char(':'),
+                    none,
+                    Intent::EnterCommandMode,
+                    ":",
+                    "command mode",
                 ),
-                ctrl(
-                    'h',
-                    Action::MoveFocus(Direction::Left),
-                    "^H",
-                    "Move focus left",
-                ),
-                ctrl(
-                    'j',
-                    Action::MoveFocus(Direction::Down),
-                    "^J",
-                    "Move focus down",
-                ),
-                ctrl('k', Action::MoveFocus(Direction::Up), "^K", "Move focus up"),
-                ctrl(
-                    'l',
-                    Action::MoveFocus(Direction::Right),
-                    "^L",
-                    "Move focus right",
-                ),
-                plain(
-                    Key::Tab,
-                    Action::MoveFocus(Direction::Right),
-                    "Tab",
-                    "Next pane",
-                ),
-                plain(
+                binding(Key::Char('?'), none, Intent::Help, "?", "help"),
+                binding(Key::Esc, none, Intent::Cancel, "Esc", "cancel"),
+                binding(Key::F(2), none, Intent::ToggleSafeMode, "F2", "mode"),
+                binding(Key::F(5), none, Intent::RefreshMetadata, "F5", "refresh"),
+                binding(Key::Tab, none, Intent::ToggleFocus, "Tab", "focus"),
+                binding(
                     Key::BackTab,
-                    Action::MoveFocus(Direction::Left),
+                    none,
+                    Intent::ToggleFocus,
                     "Shift-Tab",
-                    "Previous pane",
+                    "focus",
                 ),
+                binding(Key::Enter, none, Intent::Submit, "Enter", "run/open"),
+                binding(Key::Up, none, Intent::Previous, "Up", "previous"),
+                binding(Key::Down, none, Intent::Next, "Down", "next"),
             ]),
-            history: FrameworkKeymap::new([
-                plain(
-                    Key::Char('k'),
-                    Action::HistoryUp,
-                    "k",
-                    "Move history cursor up",
-                ),
-                plain(Key::Up, Action::HistoryUp, "Up", "Move history cursor up"),
-                plain(
-                    Key::Char('j'),
-                    Action::HistoryDown,
-                    "j",
-                    "Move history cursor down",
-                ),
-                plain(
-                    Key::Down,
-                    Action::HistoryDown,
-                    "Down",
-                    "Move history cursor down",
-                ),
-                plain(
-                    Key::Enter,
-                    Action::ActivateHistory,
-                    "Enter",
-                    "Open or select history row",
-                ),
-                plain(
-                    Key::Char(' '),
-                    Action::ActivateHistory,
-                    "Space",
-                    "Open or select history row",
-                ),
-                plain(Key::Char('a'), Action::AddLocal, "a", "Add local item"),
-                plain(
-                    Key::Char('d'),
-                    Action::DeleteLocal,
-                    "d",
-                    "Delete local item",
-                ),
-                plain(
-                    Key::Char('r'),
-                    Action::RenameLocal,
-                    "r",
-                    "Rename local item",
-                ),
-            ]),
-            method: FrameworkKeymap::new([
-                plain(
-                    Key::Enter,
-                    Action::OpenMethodMenu,
-                    "Enter",
-                    "Open method menu",
-                ),
-                plain(
-                    Key::Char(' '),
-                    Action::OpenMethodMenu,
-                    "Space",
-                    "Open method menu",
-                ),
-                plain(
-                    Key::Char('1'),
-                    Action::SelectMethod("GET"),
-                    "1",
-                    "Select GET",
-                ),
-                plain(
-                    Key::Char('g'),
-                    Action::SelectMethod("GET"),
-                    "g",
-                    "Select GET",
-                ),
-                plain(
-                    Key::Char('2'),
-                    Action::SelectMethod("POST"),
-                    "2",
-                    "Select POST",
-                ),
-                plain(
-                    Key::Char('p'),
-                    Action::SelectMethod("POST"),
-                    "p",
-                    "Select POST",
-                ),
-                plain(
-                    Key::Char('3'),
-                    Action::SelectMethod("PUT"),
-                    "3",
-                    "Select PUT",
-                ),
-                plain(
-                    Key::Char('u'),
-                    Action::SelectMethod("PUT"),
-                    "u",
-                    "Select PUT",
-                ),
-                plain(
-                    Key::Char('4'),
-                    Action::SelectMethod("PATCH"),
-                    "4",
-                    "Select PATCH",
-                ),
-                plain(
-                    Key::Char('5'),
-                    Action::SelectMethod("DELETE"),
-                    "5",
-                    "Select DELETE",
-                ),
-                plain(
-                    Key::Char('x'),
-                    Action::SelectMethod("DELETE"),
-                    "x",
-                    "Select DELETE",
-                ),
-            ]),
-            response: FrameworkKeymap::new([
-                plain(
-                    Key::Enter,
-                    Action::ToggleResponseHeaders,
-                    "Enter",
-                    "Toggle response headers",
-                ),
-                plain(
-                    Key::Char(' '),
-                    Action::ToggleResponseHeaders,
-                    "Space",
-                    "Toggle response headers",
-                ),
-                plain(
-                    Key::Char('h'),
-                    Action::ToggleResponseHeaders,
-                    "h",
-                    "Toggle response headers",
-                ),
-                plain(Key::Char('v'), Action::AddLocal, "v", "Bind response value"),
-                plain(
-                    Key::Char('y'),
-                    Action::EditLocal,
-                    "y",
-                    "Copy response value",
-                ),
-            ]),
-            logs: FrameworkKeymap::new([plain(
-                Key::Char('c'),
-                Action::ClearLogs,
-                "c",
-                "Clear logs",
-            )]),
         }
     }
 
-    pub(super) fn global_action(&self, key: KeyEvent) -> Option<Action> {
-        self.global.intent_for(key)
+    pub(super) fn intent_for(&self, key: KeyEvent) -> Option<Intent> {
+        self.inner.intent_for(key)
     }
 
-    pub(super) fn local_action(&self, focus: FocusPane, key: KeyEvent) -> Option<Action> {
-        match focus {
-            FocusPane::History => self.history.intent_for(key),
-            FocusPane::Method => self.method.intent_for(key),
-            FocusPane::Response => self.response.intent_for(key),
-            FocusPane::Logs => self.logs.intent_for(key),
-            FocusPane::Url
-            | FocusPane::Query
-            | FocusPane::Headers
-            | FocusPane::State
-            | FocusPane::Body => None,
-        }
+    pub(super) fn bindings(&self) -> &[KeyBinding] {
+        self.inner.bindings()
     }
-}
-
-fn ctrl(
-    character: char,
-    intent: Action,
-    label: &'static str,
-    description: &'static str,
-) -> FrameworkKeyBinding<Action> {
-    binding(
-        Key::Char(character),
-        KeyModifiers::CONTROL,
-        intent,
-        label,
-        description,
-    )
-}
-
-fn plain(
-    key: Key,
-    intent: Action,
-    label: &'static str,
-    description: &'static str,
-) -> FrameworkKeyBinding<Action> {
-    binding(key, KeyModifiers::NONE, intent, label, description)
 }
 
 #[cfg(test)]
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-    use super::*;
+    use super::{Intent, Keymap};
 
     #[test]
-    fn bare_q_is_not_a_quit_binding() {
+    fn quit_is_not_bound_to_a_key() {
         let keymap = Keymap::curler();
 
         assert_eq!(
-            keymap.global_action(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+            keymap.intent_for(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+            None
+        );
+        assert_eq!(
+            keymap.intent_for(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)),
+            None
+        );
+        assert_eq!(
+            keymap.intent_for(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
             None
         );
     }
 
     #[test]
-    fn ctrl_q_maps_to_quit() {
+    fn colon_enters_command_mode() {
         let keymap = Keymap::curler();
 
         assert_eq!(
-            keymap.global_action(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)),
-            Some(Action::Quit)
+            keymap.intent_for(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE)),
+            Some(Intent::EnterCommandMode)
         );
     }
 
     #[test]
-    fn method_shortcuts_are_focus_local() {
+    fn escape_cancels_without_quitting() {
         let keymap = Keymap::curler();
-        let event = KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE);
 
-        assert_eq!(keymap.local_action(FocusPane::History, event), None);
         assert_eq!(
-            keymap.local_action(FocusPane::Method, event),
-            Some(Action::SelectMethod("POST"))
+            keymap.intent_for(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            Some(Intent::Cancel)
+        );
+    }
+
+    #[test]
+    fn question_mark_opens_help() {
+        let keymap = Keymap::curler();
+
+        assert_eq!(
+            keymap.intent_for(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE)),
+            Some(Intent::Help)
+        );
+    }
+
+    #[test]
+    fn exposes_shared_bindings() {
+        let keymap = Keymap::curler();
+        let labels = keymap
+            .bindings()
+            .iter()
+            .map(|binding| binding.label)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            labels,
+            vec![
+                ":",
+                "?",
+                "Esc",
+                "F2",
+                "F5",
+                "Tab",
+                "Shift-Tab",
+                "Enter",
+                "Up",
+                "Down"
+            ]
         );
     }
 }

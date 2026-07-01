@@ -581,10 +581,7 @@ fn draw_about(frame: &mut Frame<'_>, area: Rect) {
 
 fn draw_file_menu(frame: &mut Frame<'_>, area: Rect) {
     let rect = file_menu_rect(area);
-    let lines = vec![Line::from(vec![
-        Span::styled("Save", ui_style(UiRole::Warning)),
-        Span::raw("   ^S"),
-    ])];
+    let lines = vec![Line::from(Span::styled("Save", ui_style(UiRole::Warning)))];
 
     frame.render_widget(Clear, rect);
     frame.render_widget(
@@ -674,21 +671,21 @@ fn draw_rename_history(frame: &mut Frame<'_>, area: Rect, app: &App) {
 fn draw_help(frame: &mut Frame<'_>, area: Rect) {
     let rect = centered_rect(area, 78, 19);
     let lines = vec![
-        Line::from(Span::styled("Global", bold(UiRole::Accent))),
-        Line::from("^Q quit   ^R run   ^S save   ^P command palette"),
-        Line::from("^H/^J/^K/^L move focus   Tab/Shift-Tab move focus"),
+        Line::from(Span::styled("RustUI", bold(UiRole::Accent))),
+        Line::from(": command   ? help   Esc cancel"),
+        Line::from("F2 mode   F5 refresh/run   Tab/Shift-Tab focus"),
+        Line::from("Enter submit/open   Up/Down previous/next"),
         Line::from(""),
         Line::from(Span::styled("Local", bold(UiRole::Success))),
-        Line::from("History: j/k move, Enter or Space expand/select, a add, d delete, r rename"),
-        Line::from("Method: Enter/Space opens dropdown, click option; 1-5 selects"),
+        Line::from("History: Up/Down move, Enter expand/select"),
+        Line::from("Method: Enter opens dropdown, click option"),
         Line::from("Host/Path and Query: plain text input"),
         Line::from("Headers: key/value rows; raw Name: value paste is accepted"),
         Line::from("Body: Raw is text; Form/URL Encoded are key/value rows"),
         Line::from("Shared headers: edit rows in Project State / Shared Config"),
-        Line::from("Body mode: click Mode dropdown inside Body"),
-        Line::from("Response: click header toggle; h/Enter toggles headers; v bind, y copy"),
+        Line::from("Body mode: F2 or click Mode dropdown inside Body"),
+        Line::from("Response: click header toggle; Enter toggles headers"),
         Line::from("Layout: drag workspace pane borders; Menu, Actions, Logs are fixed"),
-        Line::from("Logs: c clear"),
         Line::from(""),
         Line::from("Esc closes this help pane."),
     ];

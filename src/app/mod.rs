@@ -6,7 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 mod keymap;
 
-use keymap::{Keymap, text_input_modifiers};
+use keymap::{Intent, Keymap, text_input_modifiers};
 
 use crate::{
     domain::{
@@ -139,7 +139,6 @@ struct RunResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Direction {
-    Left,
     Down,
     Up,
     Right,
@@ -147,7 +146,6 @@ enum Direction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Action {
-    Quit,
     RunRequest,
     SaveRequest,
     OpenCommandPalette,
@@ -156,15 +154,10 @@ enum Action {
     HistoryUp,
     HistoryDown,
     ActivateHistory,
-    AddLocal,
-    DeleteLocal,
-    RenameLocal,
-    EditLocal,
     SelectMethod(&'static str),
     OpenBodyModeMenu,
     SelectBodyMode(BodyMode),
     SubmitRename,
-    ClearLogs,
     ToggleResponseHeaders,
     OpenAbout,
     OpenFileMenu,
@@ -1015,13 +1008,8 @@ impl App {
             return;
         }
 
-        if self.overlay.is_some() && key.code == KeyCode::Esc {
+        if self.overlay.is_some() && self.keymap.intent_for(key) == Some(Intent::Cancel) {
             self.dispatch(Action::CloseOverlay);
-            return;
-        }
-
-        if let Some(action) = self.keymap.global_action(key) {
-            self.dispatch(action);
             return;
         }
 
@@ -1029,14 +1017,63 @@ impl App {
             return;
         }
 
-        if let Some(action) = self.keymap.local_action(self.focus, key) {
-            self.dispatch(action);
+        if let Some(intent) = self.keymap.intent_for(key) {
+            self.dispatch_intent(intent);
+        }
+    }
+
+    fn dispatch_intent(&mut self, intent: Intent) {
+        match intent {
+            Intent::EnterCommandMode => self.dispatch(Action::OpenCommandPalette),
+            Intent::Cancel => {
+                if self.overlay.is_some() || self.context_menu.is_some() {
+                    self.dispatch(Action::CloseOverlay);
+                }
+            }
+            Intent::Help => self.dispatch(Action::OpenHelp),
+            Intent::ToggleSafeMode => self.dispatch(Action::OpenBodyModeMenu),
+            Intent::RefreshMetadata => self.dispatch(Action::RunRequest),
+            Intent::ToggleFocus => self.dispatch(Action::MoveFocus(Direction::Right)),
+            Intent::Submit => self.submit_focused(),
+            Intent::Previous => self.previous_focused(),
+            Intent::Next => self.next_focused(),
+        }
+    }
+
+    fn submit_focused(&mut self) {
+        match self.focus {
+            FocusPane::History => self.dispatch(Action::ActivateHistory),
+            FocusPane::Method => self.dispatch(Action::OpenMethodMenu),
+            FocusPane::Response => self.dispatch(Action::ToggleResponseHeaders),
+            FocusPane::Url
+            | FocusPane::Query
+            | FocusPane::Headers
+            | FocusPane::State
+            | FocusPane::Body => {
+                self.dispatch(Action::RunRequest);
+            }
+            FocusPane::Logs => {}
+        }
+    }
+
+    fn previous_focused(&mut self) {
+        if self.focus == FocusPane::History {
+            self.dispatch(Action::HistoryUp);
+        } else {
+            self.dispatch(Action::MoveFocus(Direction::Up));
+        }
+    }
+
+    fn next_focused(&mut self) {
+        if self.focus == FocusPane::History {
+            self.dispatch(Action::HistoryDown);
+        } else {
+            self.dispatch(Action::MoveFocus(Direction::Down));
         }
     }
 
     fn dispatch(&mut self, action: Action) {
         match action {
-            Action::Quit => self.quit(),
             Action::RunRequest => self.run_current_request(),
             Action::SaveRequest => self.save_current_request(),
             Action::OpenCommandPalette => self.log("Command palette placeholder"),
@@ -1052,18 +1089,10 @@ impl App {
                     self.activate_history_row(self.history_cursor);
                 }
             }
-            Action::AddLocal => self.add_local_placeholder(),
-            Action::DeleteLocal => self.delete_local_placeholder(),
-            Action::RenameLocal => self.rename_local_placeholder(),
-            Action::EditLocal => self.edit_local_placeholder(),
             Action::SelectMethod(method) => self.select_method(method),
             Action::OpenBodyModeMenu => self.open_body_mode_selector(),
             Action::SelectBodyMode(mode) => self.select_body_mode(mode),
             Action::SubmitRename => self.submit_history_rename(),
-            Action::ClearLogs => {
-                self.logs.clear();
-                self.log("Logs cleared");
-            }
             Action::ToggleResponseHeaders => {
                 if self.response.is_none() {
                     self.log("No response headers to expand");
@@ -1107,10 +1136,6 @@ impl App {
                 self.log("Overlay closed");
             }
         }
-    }
-
-    fn quit(&mut self) {
-        self.should_quit = true;
     }
 
     fn select_history_entry(&mut self, id: &str) {
@@ -1212,8 +1237,10 @@ impl App {
             KeyCode::Enter => {
                 if accepts_newline(self.focus) {
                     self.push_editor_char('\n');
+                    true
+                } else {
+                    false
                 }
-                true
             }
             _ => false,
         };
@@ -1375,25 +1402,18 @@ impl App {
         self.focus = match (self.focus, direction) {
             (FocusPane::History, Direction::Right) => FocusPane::Method,
             (FocusPane::History, Direction::Down) => FocusPane::Logs,
-            (FocusPane::Method, Direction::Left) => FocusPane::History,
             (FocusPane::Method, Direction::Right) => FocusPane::Url,
             (FocusPane::Method, Direction::Down) => FocusPane::Headers,
-            (FocusPane::Url, Direction::Left) => FocusPane::Method,
             (FocusPane::Url, Direction::Right) => FocusPane::Query,
             (FocusPane::Url, Direction::Down) => FocusPane::Headers,
-            (FocusPane::Query, Direction::Left) => FocusPane::Url,
             (FocusPane::Query, Direction::Down) => FocusPane::Headers,
-            (FocusPane::Headers, Direction::Left) => FocusPane::History,
             (FocusPane::Headers, Direction::Up) => FocusPane::Method,
             (FocusPane::Headers, Direction::Down) => FocusPane::State,
-            (FocusPane::State, Direction::Left) => FocusPane::History,
             (FocusPane::State, Direction::Up) => FocusPane::Headers,
             (FocusPane::State, Direction::Down) => FocusPane::Body,
-            (FocusPane::Body, Direction::Left) => FocusPane::History,
             (FocusPane::Body, Direction::Right) => FocusPane::Response,
             (FocusPane::Body, Direction::Up) => FocusPane::State,
             (FocusPane::Body, Direction::Down) => FocusPane::Logs,
-            (FocusPane::Response, Direction::Left) => FocusPane::Body,
             (FocusPane::Response, Direction::Up) => FocusPane::State,
             (FocusPane::Response, Direction::Down) => FocusPane::Logs,
             (FocusPane::Logs, Direction::Up) => FocusPane::Body,
@@ -1641,10 +1661,6 @@ impl App {
         self.rename_input = label;
         self.overlay = Some(Overlay::RenameHistory);
         self.log("Rename history opened");
-    }
-
-    fn edit_local_placeholder(&mut self) {
-        self.log(format!("Edit placeholder for {}", self.focus.label()));
     }
 
     fn select_method(&mut self, method: &'static str) {
@@ -1954,25 +1970,25 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_q_requests_quit() {
+    fn ctrl_q_does_not_quit() {
         let mut app = App::new();
 
         app.handle_key_event(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
 
-        assert!(app.should_quit());
+        assert!(!app.should_quit());
     }
 
     #[test]
-    fn ctrl_l_moves_focus_globally() {
+    fn tab_uses_shared_focus_intent() {
         let mut app = App::new();
 
-        app.handle_key_event(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
+        app.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
 
         assert_eq!(app.focus(), FocusPane::Method);
     }
 
     #[test]
-    fn method_shortcuts_are_local_to_method_pane() {
+    fn number_keys_are_not_method_shortcuts() {
         let mut app = App::new();
 
         app.handle_key_event(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
@@ -1981,7 +1997,25 @@ mod tests {
         app.set_focus(FocusPane::Method);
         app.handle_key_event(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
 
-        assert_eq!(app.request.method, "POST");
+        assert_eq!(app.request.method, "GET");
+    }
+
+    #[test]
+    fn question_mark_opens_help() {
+        let mut app = App::new();
+
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+
+        assert_eq!(app.overlay(), Some(Overlay::Help));
+    }
+
+    #[test]
+    fn f5_runs_current_request() {
+        let mut app = App::new();
+
+        app.handle_key_event(KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE));
+
+        assert!(app.active_run().is_some());
     }
 
     #[test]
@@ -2243,7 +2277,7 @@ mod tests {
         assert!(app.response_headers_expanded());
         assert_eq!(app.focus(), FocusPane::Response);
 
-        app.handle_key_event(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+        app.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(!app.response_headers_expanded());
     }
 
@@ -2336,7 +2370,7 @@ mod tests {
         app.activate_history_row(0);
         app.activate_history_row(1);
         app.activate_history_row(2);
-        app.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        app.delete_local_placeholder();
 
         assert!(app.history.entries.is_empty());
         assert_eq!(app.history_rows(), vec![HistoryRow::Empty]);
@@ -2354,7 +2388,7 @@ mod tests {
                 .expect("request parses"),
         );
 
-        app.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        app.delete_local_placeholder();
 
         assert!(app.history.entries.is_empty());
         assert_eq!(app.history_rows(), vec![HistoryRow::Empty]);
@@ -2371,7 +2405,7 @@ mod tests {
         app.activate_history_row(0);
         app.activate_history_row(1);
         app.activate_history_row(2);
-        app.handle_key_event(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        app.rename_local_placeholder();
         app.rename_input.clear();
         type_text(&mut app, "search q rust");
         app.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
